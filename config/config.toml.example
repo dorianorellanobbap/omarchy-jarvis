@@ -32,9 +32,14 @@ cooldown       = 1.0   # ignore the wake word this long after replying
 #              file instead of stdout -- for CLIs that print progress logs.
 #
 # `actions = true` lets the agent launch apps and open URLs through the
-# `jarvis-open` wrapper, which is the entire blast radius it gets. It only
-# works if the CLI can be told to permit exactly one command. Left false, the
-# agent can only answer out loud.
+# `jarvis-open` wrapper. It only works if the CLI can be told to permit
+# exactly one command. Left false, the agent can only answer out loud.
+#
+# It ships false. Turning it on means a sentence spoken near the microphone
+# reaches an agent that has a tool enabled, and what keeps that agent to
+# `jarvis-open` alone is the agent CLI's own allowlist enforcement, not
+# anything Jarvis can enforce itself. That is a fine trade to make on
+# purpose. It is not one to inherit from a default.
 #
 # Both presets below are tested. Adding another CLI is just another section --
 # run `jarvis-listen --agents` to see what's configured and installed, and
@@ -50,7 +55,8 @@ command = [
   "--append-system-prompt", "{system}",
   "--allowedTools", "Bash(jarvis-open:*)",
 ]
-actions = true
+# Set true to let Jarvis open apps and web pages. Read the note above first.
+actions = false
 
 [agents.codex]
 # OpenAI Codex. Answer-only: its sandbox modes are all-or-nothing, and the one

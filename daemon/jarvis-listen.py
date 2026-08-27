@@ -67,7 +67,14 @@ DEFAULTS = {
             "command": ["claude", "-p", "{prompt}",
                         "--append-system-prompt", "{system}",
                         "--allowedTools", "Bash(jarvis-open:*)"],
-            "actions": True,
+            # Answer-only unless the config says otherwise. Letting a sentence
+            # spoken near the mic reach a tool-enabled agent is a decision the
+            # person installing this should make on purpose, not one they
+            # inherit from a default. It also means these DEFAULTS stay safe
+            # as a fallback: an unreadable config drops back to here, and
+            # dropping back should never quietly grant more than was granted
+            # before.
+            "actions": False,
         },
     },
 }
@@ -448,10 +455,15 @@ def speak(text, voice):
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         out = tmp.name
     try:
-        subprocess.run(
-            [VENV_PY, "-m", "piper", "-m", voice, "-f", out],
-            input=text, text=True, capture_output=True, timeout=180, check=False,
-        )
+        try:
+            subprocess.run(
+                [VENV_PY, "-m", "piper", "-m", voice, "-f", out],
+                input=text, text=True, capture_output=True, timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            log("speech synthesis timed out")
+            return
         # A piper failure still leaves a bare 44-byte wav header behind.
         if os.path.getsize(out) > 44:
             subprocess.run(["pw-play", out], stdout=subprocess.DEVNULL,
@@ -488,6 +500,13 @@ def handle_command(mic, ambient, agent, voice, listen):
         set_state("thinking")
         chime("stop")
         text = transcribe(path)
+    except subprocess.TimeoutExpired:
+        # One slow transcription should cost you one question, not the
+        # listener. Letting this escape kills the daemon, and systemd's
+        # Restart=on-failure then brings the microphone back up on its own,
+        # which is a strange way for an armed mic to behave.
+        log("transcription timed out")
+        return
     finally:
         try:
             os.unlink(path)

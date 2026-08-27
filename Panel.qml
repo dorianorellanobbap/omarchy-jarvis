@@ -73,7 +73,7 @@ Panel {
   readonly property string agentNote: {
     var e = agentEntry(agent)
     if (!e) return ""
-    if (!e.installed) return "not installed — replies will fail"
+    if (!e.installed) return "not installed, replies will fail"
     return e.actions ? "can open apps and URLs" : "answer-only"
   }
 
@@ -412,7 +412,7 @@ Panel {
           Text {
             text: root.installingVoice
               ? "Downloading " + root.pendingVoice + "… about 63 MB."
-              : "Voices not listed here work too — put a path in the config file."
+              : "Voices not listed here work too. Put a path in the config file."
             color: Qt.darker(root.fg, 1.4)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -593,7 +593,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "Everything else — adding an agent, the voice — lives in the config file."
+          text: "Everything else (adding an agent, the voice) lives in the config file."
           color: Qt.darker(root.fg, 1.4)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

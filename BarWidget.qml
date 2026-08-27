@@ -40,7 +40,7 @@ BarWidget {
     if (pipeline === "listening") return "Listening…"
     if (pipeline === "thinking") return "Thinking…"
     if (pipeline === "speaking") return "Speaking…"
-    return "Armed — say \"hey jarvis\""
+    return "Armed: say \"hey jarvis\""
   }
 
   function refresh() {
@@ -149,7 +149,7 @@ BarWidget {
       root.busy = false
       root.refresh()
       if (exitCode !== 0) root.sendNote("systemctl failed (exit " + exitCode + ")")
-      else root.sendNote(root.armed ? "Disarmed" : "Armed — say \"hey jarvis\"")
+      else root.sendNote(root.armed ? "Disarmed" : "Armed: say \"hey jarvis\"")
     }
   }
 

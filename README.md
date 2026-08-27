@@ -1,11 +1,11 @@
-# Jarvis — a wake-word voice assistant for the Omarchy bar
+# Jarvis: a wake-word voice assistant for the Omarchy bar
 
 Say **"hey jarvis"**, ask a question, hear the answer. A bar widget arms and
 disarms the listener and shows what it is doing.
 
 Everything except the agent call runs on your machine: [openWakeWord] listens
 on a continuous 16kHz mic stream, [voxtype]'s local whisper model transcribes,
-[piper] speaks the reply. Only the transcribed *text* ever leaves the machine —
+[piper] speaks the reply. Only the transcribed *text* ever leaves the machine,
 and only when you say the wake word.
 
 Which agent answers is configuration, not code. Ships working presets for
@@ -21,17 +21,29 @@ Which agent answers is configuration, not code. Ships working presets for
 
 This puts an **always-on microphone daemon** on your machine. It holds the mic
 open whenever it is armed, and when it hears the wake word it sends what you
-said to whichever agent you configured — a cloud service, unless you point it
-at a local model.
+said to whichever agent you configured, which is a cloud service unless you
+point it at a local model.
 
 It is off until you arm it, and the widget shows when it is listening. But you
 should be comfortable with that trade before installing. Omarchy plugins run
 unsandboxed with your user's permissions.
 
-With `actions = true` the agent can also **launch apps and open URLs**. That
-goes through `jarvis-open`, a wrapper that can start an installed `.desktop`
-entry or open an `http(s)` URL and nothing else — it is the entire blast
-radius. Set `actions = false` and the agent can only talk.
+**Actions are off by default.** Set `actions = true` and the agent can also
+**launch apps and open URLs**. That goes through `jarvis-open`, a wrapper that
+can start an installed `.desktop` entry or open an `http(s)` URL and nothing
+else. Worth being precise about what holds that line: `jarvis-open` is the
+only command the agent is granted, and what keeps it to that one command is
+the agent CLI's own allowlist (`--allowedTools 'Bash(jarvis-open:*)'` for
+Claude Code), not anything Jarvis enforces itself. Turn it on if you want a
+voice assistant that acts. Leave it off and the agent can only talk.
+
+Two more things worth knowing:
+
+- Anything running as your user can arm the listener over Quickshell's IPC
+  (`qs ipc call dorian.voice arm`), the same way the widget does. A
+  notification fires when it does, unless you turn notifications off.
+- The systemd unit is not sandboxed with `ProtectHome` and friends. It cannot
+  be: its whole job is to launch an agent CLI that reads your files.
 
 ---
 
@@ -51,7 +63,7 @@ cd omarchy-jarvis && ./install.sh
 
 The script builds a Python venv, fetches and checksums the piper voice (63MB),
 installs a systemd **user** unit, writes a starter config, and verifies the
-result. It is idempotent — re-run it any time. Then add the **Voice Assistant**
+result. It is idempotent, so re-run it any time. Then add the **Voice Assistant**
 widget to your bar and log out and back in.
 
 The unit is installed but **not enabled**: nothing holds the mic open until you
@@ -84,13 +96,13 @@ journalctl --user -u jarvis -f                           # watch it work
 
 ## Configure
 
-The panel covers the everyday settings — agent, wake word, sensitivity, how
+The panel covers the everyday settings: agent, wake word, sensitivity, how
 long a pause ends your question, how long a question may run. Changes are
 written straight to the config file. The listener reads its config once at
 startup, so the panel restarts it for you when it is armed; when it is
 disarmed the change simply applies next time you arm it.
 
-Everything else lives in `~/.config/jarvis/config.toml` — see
+Everything else lives in `~/.config/jarvis/config.toml`. See
 [`config/config.toml.example`](config/config.toml.example) for every option,
 commented.
 
@@ -100,7 +112,7 @@ wake_word = "hey_jarvis"    # or alexa, hey_mycroft, hey_marvin
 ```
 
 Hand-edit it freely: writes from the panel go through `jarvis-config`, which
-rewrites a single line and leaves the rest of the file — comments included —
+rewrites a single line and leaves the rest of the file, comments included,
 exactly as you wrote it. It also refuses to touch anything under `[agents.*]`,
 so no click in the panel can change the command the daemon executes.
 
@@ -113,7 +125,7 @@ as shell. Three placeholders are substituted into individual arguments:
 | --- | --- |
 | `{prompt}` | what you said, transcribed |
 | `{system}` | the voice-style system prompt Jarvis builds |
-| `{outfile}` | a temp file — if present, the reply is read from there instead of stdout |
+| `{outfile}` | a temp file. If present, the reply is read from there instead of stdout |
 
 ```toml
 [agents.mycli]
@@ -145,15 +157,15 @@ Pipeline state is written to `$XDG_RUNTIME_DIR/jarvis/state`, so the widget
 reads a file instead of talking to the process.
 
 The settings panel is QML and the daemon's config is TOML, which QML cannot
-parse. Rather than teach the widget about TOML — or move the settings somewhere
-the daemon would need Omarchy to read them — the panel shells out to
+parse. Rather than teach the widget about TOML, or move the settings somewhere
+the daemon would need Omarchy to read them, the panel shells out to
 `jarvis-config`, which prints JSON and writes single lines.
 
 ## Notes from building it
 
 - An always-on mic forces AirPods into mono HFP. Pin your default source to
   the internal mic if that bites.
-- `pw-record` exits early if its stderr is `DEVNULL` — it needs a real file.
+- `pw-record` exits early if its stderr is `DEVNULL`. It needs a real file.
 - While the agent is thinking, nothing drains the mic pipe, so it holds stale
   audio including Jarvis's own reply. The stream is restarted after every
   exchange rather than replayed.
@@ -167,4 +179,4 @@ the daemon would need Omarchy to read them — the panel shells out to
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
