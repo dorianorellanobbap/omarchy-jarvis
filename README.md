@@ -38,14 +38,14 @@ radius. Set `actions = false` and the agent can only talk.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/<you>/omarchy-jarvis.git --enable
+omarchy plugin add https://github.com/dorianorellanobbap/omarchy-jarvis.git --enable
 ~/.config/omarchy/plugins/dorian.voice/install.sh
 ```
 
 Or from a clone:
 
 ```sh
-git clone https://github.com/<you>/omarchy-jarvis.git
+git clone https://github.com/dorianorellanobbap/omarchy-jarvis.git
 cd omarchy-jarvis && ./install.sh
 ```
 
