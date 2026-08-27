@@ -46,6 +46,10 @@ mkdir -p "$JARVIS_DIR/bin" "$JARVIS_DIR/voices"
 cp "$SRC/daemon/jarvis-listen.py" "$JARVIS_DIR/"
 cp "$SRC/daemon/jarvis-open"      "$JARVIS_DIR/bin/"
 cp "$SRC/daemon/jarvis-config"    "$JARVIS_DIR/"
+# The safe-file helpers are imported by all three, and each imports it from
+# its own directory, so it lands in both.
+cp "$SRC/daemon/safefile.py"      "$JARVIS_DIR/"
+cp "$SRC/daemon/safefile.py"      "$JARVIS_DIR/bin/"
 cp "$SRC/daemon/en_US-amy-medium.onnx.json" "$JARVIS_DIR/voices/"
 chmod +x "$JARVIS_DIR/bin/jarvis-open" "$JARVIS_DIR/jarvis-listen.py" "$JARVIS_DIR/jarvis-config"
 

@@ -1,78 +1,197 @@
-#!/usr/bin/env bash
-# The only shell command the voice assistant is allowed to run.
-#
-# claude -p starts with no tools enabled, so the daemon passes
-# --allowedTools 'Bash(jarvis-open:*)'. That makes this script the entire
-# blast radius: it can launch an installed desktop app or open an http(s)
-# URL, and nothing else.
-set -euo pipefail
+#!/usr/bin/env python3
+"""The only shell command the voice assistant is allowed to run.
 
-usage() {
-  echo "usage: jarvis-open list | app <name> | url <https://...>" >&2
-  exit 2
-}
+`claude -p` starts with no tools enabled, so the daemon passes
+--allowedTools 'Bash(jarvis-open:*)'. That makes this script the entire blast
+radius: it can launch an installed desktop app or open an http(s) URL, and
+nothing else.
 
-app_dirs=("$HOME/.local/share/applications" /usr/share/applications)
+    jarvis-open list            every launchable app name
+    jarvis-open app <name>      launch one
+    jarvis-open url <https://…> open a web page
 
-# Every installed .desktop entry as "<id>\t<Name>", minus the hidden ones.
-entries() {
-  local d f id name nodisplay
-  for d in "${app_dirs[@]}"; do
-    [[ -d $d ]] || continue
-    for f in "$d"/*.desktop; do
-      [[ -e $f ]] || continue
-      id=$(basename "$f" .desktop)
-      nodisplay=$(grep -m1 '^NoDisplay=' "$f" 2>/dev/null | cut -d= -f2 || true)
-      [[ ${nodisplay,,} == true ]] && continue
-      name=$(grep -m1 '^Name=' "$f" 2>/dev/null | cut -d= -f2- || true)
-      printf '%s\t%s\n' "$id" "${name:-$id}"
-    done
-  done | sort -u -t$'\t' -k1,1
-}
+It used to be a shell script that ran `grep` over every path matching
+$HOME/.local/share/applications/*.desktop and buffered the whole generated
+entry list. Both halves of that trusted the filesystem: a `.desktop` name
+planted as a FIFO makes grep wait for a writer that never comes -- hanging
+the agent call, and with it the assistant -- and a large or endless file is
+read into memory whole. Reading is done here instead, descriptor-first
+through safefile: never blocking, regular files only, bounded per file and
+bounded in total.
+"""
 
-# Exact id, then exact name, then substring on either. First hit wins.
-resolve() {
-  local q=${1,,} all id name
-  all=$(entries)
-  while IFS=$'\t' read -r id name; do
-    [[ ${id,,} == "$q" || ${name,,} == "$q" ]] && { echo "$id"; return 0; }
-  done <<<"$all"
-  while IFS=$'\t' read -r id name; do
-    [[ ${id,,} == *"$q"* || ${name,,} == *"$q"* ]] && { echo "$id"; return 0; }
-  done <<<"$all"
-  return 1
-}
+import os
+import re
+import subprocess
+import sys
 
-# Detach so the app outlives this script and the daemon's subprocess timeout.
-spawn() {
-  if command -v uwsm >/dev/null && [[ -n ${UWSM_WAIT_VARNAMES:-} ]]; then
-    setsid -f uwsm app -- "$@" >/dev/null 2>&1 && return 0
-  fi
-  setsid -f "$@" >/dev/null 2>&1
-}
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import safefile  # noqa: E402  (needs our own directory on the path first)
 
-case "${1:-}" in
-  list)
-    entries | cut -f2
-    ;;
-  app)
-    shift; [[ $# -ge 1 ]] || usage
-    query="$*"
-    if ! id=$(resolve "$query"); then
-      echo "no installed app matches '$query'" >&2
-      exit 1
-    fi
-    spawn "$id.desktop" || setsid -f gtk-launch "$id.desktop" >/dev/null 2>&1
-    echo "launched $id"
-    ;;
-  url)
-    shift; [[ $# -eq 1 ]] || usage
-    url="$1"
-    # Only ever hand a real web URL to the browser.
-    [[ $url =~ ^https?://[^[:space:]\"\'\\]+$ ]] || {
-      echo "refusing non-http(s) url" >&2; exit 1; }
-    spawn xdg-open "$url" || setsid -f xdg-open "$url" >/dev/null 2>&1
-    echo "opened $url"
-    ;;
-  *) usage ;;
-esac
+HOME = os.path.expanduser("~")
+DATA_HOME = os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share")
+APP_DIRS = [os.path.join(DATA_HOME, "applications"), "/usr/share/applications"]
+
+# A .desktop entry is a small ini file; the largest on a normal system is a
+# few KB. 64 KiB is room to spare, and everything past it is not an entry we
+# need to read to answer "what apps are installed".
+MAX_ENTRY_BYTES = 64 << 10
+# Nothing to do with what a desktop looks like -- a ceiling so a directory
+# stuffed with files cannot make this process grow without bound.
+MAX_ENTRIES = 4000
+
+# /usr/share/applications is root-owned and ~/.local/share/applications is
+# ours. Anything owned by a third uid is not a package's entry or one we
+# wrote, so it does not get read.
+OWNERS = {os.geteuid(), 0}
+
+NAME_RE = re.compile(r"^Name\s*=\s*(.*)$")
+NODISPLAY_RE = re.compile(r"^NoDisplay\s*=\s*(.*)$")
+URL_RE = re.compile(r"^https?://[^\s\"'\\]+$")
+
+
+def read_entry(path):
+    """(name, hidden) for one .desktop file, or None if it is unreadable.
+
+    A symlinked .desktop is a normal thing to have, so those are followed --
+    but the descriptor still has to turn out to be a regular file of an
+    expected owner, within the size ceiling, and the open never blocks.
+    """
+    try:
+        text = safefile.read_text(path, MAX_ENTRY_BYTES,
+                                  allow_symlink=True, owners=OWNERS)
+    except (OSError, ValueError):
+        return None
+
+    name = hidden = None
+    for line in text.splitlines():
+        if name is None:
+            match = NAME_RE.match(line)
+            if match:
+                name = match.group(1).strip()
+                continue
+        if hidden is None:
+            match = NODISPLAY_RE.match(line)
+            if match:
+                hidden = match.group(1).strip().lower() == "true"
+        if name is not None and hidden is not None:
+            break
+    return name, bool(hidden)
+
+
+def entries():
+    """Every installed .desktop entry as (id, name), minus the hidden ones.
+
+    First directory wins on a duplicate id, so a user's own override of a
+    packaged entry is the one that shows up.
+    """
+    found = {}
+    for directory in APP_DIRS:
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for filename in names:
+            if not filename.endswith(".desktop"):
+                continue
+            entry_id = filename[: -len(".desktop")]
+            if entry_id in found:
+                continue
+            if len(found) >= MAX_ENTRIES:
+                return sorted(found.items())
+            parsed = read_entry(os.path.join(directory, filename))
+            if parsed is None:
+                continue
+            name, hidden = parsed
+            if hidden:
+                continue
+            found[entry_id] = name or entry_id
+    return sorted(found.items())
+
+
+def resolve(query):
+    """Exact id, then exact name, then substring on either. First hit wins."""
+    query = query.lower()
+    all_entries = entries()
+    for entry_id, name in all_entries:
+        if query in (entry_id.lower(), name.lower()):
+            return entry_id
+    for entry_id, name in all_entries:
+        if query in entry_id.lower() or query in name.lower():
+            return entry_id
+    return None
+
+
+def spawn(argv):
+    """Detach, so the app outlives this script and the daemon's timeout."""
+    subprocess.Popen(argv, start_new_session=True,
+                     stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+
+
+def have(command):
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory and os.access(os.path.join(directory, command), os.X_OK):
+            return True
+    return False
+
+
+def launch(entry_id):
+    desktop = entry_id + ".desktop"
+    # Under uwsm the app belongs in its own systemd scope; elsewhere
+    # gtk-launch is what actually knows how to run a .desktop entry.
+    if have("uwsm") and os.environ.get("UWSM_WAIT_VARNAMES"):
+        spawn(["uwsm", "app", "--", desktop])
+    elif have("gtk-launch"):
+        spawn(["gtk-launch", desktop])
+    else:
+        raise SystemExit("no way to launch a .desktop entry "
+                         "(install uwsm or gtk-launch)")
+
+
+def usage():
+    print("usage: jarvis-open list | app <name> | url <https://...>",
+          file=sys.stderr)
+    return 2
+
+
+def main(argv):
+    if not argv:
+        return usage()
+    command, rest = argv[0], argv[1:]
+
+    if command == "list":
+        for _, name in entries():
+            print(name)
+        return 0
+
+    if command == "app":
+        if not rest:
+            return usage()
+        query = " ".join(rest)
+        entry_id = resolve(query)
+        if entry_id is None:
+            print(f"no installed app matches '{query}'", file=sys.stderr)
+            return 1
+        launch(entry_id)
+        print(f"launched {entry_id}")
+        return 0
+
+    if command == "url":
+        if len(rest) != 1:
+            return usage()
+        url = rest[0]
+        # Only ever hand a real web URL to the browser.
+        if not URL_RE.match(url):
+            print("refusing non-http(s) url", file=sys.stderr)
+            return 1
+        spawn(["xdg-open", url])
+        print(f"opened {url}")
+        return 0
+
+    return usage()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

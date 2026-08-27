@@ -19,6 +19,9 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import safefile  # noqa: E402  (needs HERE on the path first)
+
 CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
     os.path.expanduser("~"), ".config")
 CONFIG_PATH = os.path.join(CONFIG_HOME, "jarvis", "config.toml")
@@ -139,11 +142,15 @@ def set_key(path, dotted, value):
     table, _, leaf = dotted.rpartition(".")
     rendered = f"{leaf} = {format_value(value)}"
 
-    if os.path.exists(path):
-        with open(path) as fh:
-            lines = fh.read().splitlines()
-    else:
+    try:
+        # The config path is predictable and this runs behind a GUI button,
+        # so read it descriptor-first: no symlink, no blocking on a planted
+        # FIFO, and a ceiling on how much we will pull in.
+        lines = safefile.read_text(path, safefile.MAX_CONFIG_BYTES).splitlines()
+    except FileNotFoundError:
         lines = []
+    except OSError as exc:
+        raise SystemExit(f"cannot read {path}: {exc}")
 
     key_re = re.compile(rf"^(\s*){re.escape(leaf)}(\s*)=", re.ASCII)
 
@@ -195,11 +202,14 @@ def set_key(path, dotted, value):
 
 
 def write(path, lines):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write("\n".join(lines).rstrip("\n") + "\n")
-    os.replace(tmp, path)
+    """Replace the config atomically.
+
+    The old `path + ".tmp"` was a predictable name a local attacker could
+    pre-plant as a symlink to redirect the write. safefile.write_atomic
+    creates an unpredictable 0600 file in the same directory and renames it
+    over the target, so a concurrent reader sees the old file or the new one.
+    """
+    safefile.write_atomic(path, "\n".join(lines).rstrip("\n") + "\n")
 
 
 def cmd_show(daemon, args):
@@ -243,26 +253,41 @@ def voice_list():
     return out
 
 
-def fetch(url, dest):
-    """Download to a temp file and rename, so a failure never leaves a
-    half-written voice that piper would choke on."""
+# A piper medium voice is ~63MB and its metadata a few KB. Both ceilings are
+# generous; they exist so a redirected or hostile response cannot fill the
+# disk while the panel sits there spinning.
+MAX_VOICE_BYTES = 256 << 20
+MAX_META_BYTES = 1 << 20
+
+
+def fetch(url, dest, limit):
+    """Download to a private temp file and rename, so a failure never leaves a
+    half-written voice that piper would choke on.
+
+    The temp file is unpredictably named inside the destination directory
+    rather than the old, guessable `dest + ".part"`, and the transfer stops
+    at `limit` bytes instead of writing whatever the server keeps sending.
+    """
     import urllib.error
     import urllib.request
 
-    tmp = dest + ".part"
     try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            with open(tmp, "wb") as fh:
-                while True:
-                    chunk = response.read(1 << 16)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
+        with safefile.private_temp(dest, suffix=".part") as (fd, tmp):
+            written = 0
+            with os.fdopen(fd, "wb") as fh:
+                with urllib.request.urlopen(url, timeout=120) as response:
+                    while True:
+                        chunk = response.read(1 << 16)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > limit:
+                            raise SystemExit(
+                                f"download exceeded {limit} bytes; aborted")
+                        fh.write(chunk)
+            safefile.commit(tmp, dest, 0o644)
     except urllib.error.URLError as exc:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
         raise SystemExit(f"download failed: {exc.reason}")
-    os.replace(tmp, dest)
 
 
 def cmd_install_voice(daemon, args):
@@ -277,9 +302,9 @@ def cmd_install_voice(daemon, args):
     meta = onnx + ".json"
 
     if not os.path.exists(onnx):
-        fetch(voice_url(vid), onnx)
+        fetch(voice_url(vid), onnx, MAX_VOICE_BYTES)
     if not os.path.exists(meta):
-        fetch(voice_url(vid, ".onnx.json"), meta)
+        fetch(voice_url(vid, ".onnx.json"), meta, MAX_META_BYTES)
 
     # A truncated download and an HTML error page both land as a small file;
     # either one would fail later inside piper with nothing useful to show.
@@ -287,9 +312,8 @@ def cmd_install_voice(daemon, args):
         os.unlink(onnx)
         raise SystemExit("downloaded voice looks truncated; try again")
     try:
-        with open(meta) as fh:
-            json.load(fh)
-    except (OSError, json.JSONDecodeError):
+        json.loads(safefile.read_text(meta, MAX_META_BYTES))
+    except (OSError, ValueError):
         raise SystemExit("voice metadata is not valid JSON; try again")
 
     print(f"installed {vid}")

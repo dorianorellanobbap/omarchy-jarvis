@@ -29,6 +29,10 @@ import wave
 
 import numpy as np
 
+# Next to this file, in the repo and in ~/.local/share/jarvis alike.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import safefile
+
 HOME = os.path.expanduser("~")
 JARVIS_DIR = os.path.join(HOME, ".local", "share", "jarvis")
 VOICES_DIR = os.path.join(JARVIS_DIR, "voices")
@@ -176,15 +180,21 @@ class Agent:
 def load_config(path=CONFIG_PATH):
     """DEFAULTS, with ~/.config/jarvis/config.toml layered on top if present."""
     cfg = DEFAULTS
-    if os.path.exists(path):
-        try:
-            with open(path, "rb") as fh:
-                cfg = merge(DEFAULTS, tomllib.load(fh))
-            log(f"config: {path}")
-        except (tomllib.TOMLDecodeError, OSError) as exc:
-            log(f"config unreadable ({exc}), using defaults")
-    else:
+    try:
+        # Descriptor-first and bounded: a symlink, FIFO or oversized file at
+        # this predictable path is refused, not followed, waited on, or slurped.
+        raw = safefile.read_bytes(path, safefile.MAX_CONFIG_BYTES)
+    except FileNotFoundError:
         log("no config file, using defaults")
+        return cfg
+    except OSError as exc:
+        log(f"config unreadable ({exc}), using defaults")
+        return cfg
+    try:
+        cfg = merge(DEFAULTS, tomllib.loads(raw.decode("utf-8")))
+        log(f"config: {path}")
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        log(f"config unreadable ({exc}), using defaults")
     return cfg
 
 
@@ -231,24 +241,17 @@ def resolve_wake_model(cfg):
 # Pipeline state, shared with the bar widget
 # --------------------------------------------------------------------------
 
-def open_nofollow(path):
-    """Open `path` for writing, refusing to follow a symlink.
-
-    O_NOFOLLOW makes the open fail outright if the final component is a
-    symlink, so a planted link cannot redirect the write somewhere else.
-    """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-    return os.fdopen(os.open(path, flags, 0o600), "w")
-
-
 def set_state(state):
-    """Publish pipeline state for the bar widget (idle/listening/thinking/speaking)."""
+    """Publish pipeline state for the bar widget (idle/listening/thinking/speaking).
+
+    safefile.write_atomic writes an unpredictably named 0600 temp file inside
+    the 0700 state dir and renames it over the target, so there is no
+    guessable `state.tmp` to pre-plant and the widget's once-a-second reader
+    only ever sees a complete value.
+    """
     try:
         os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-        tmp = STATE_FILE + ".tmp"
-        with open_nofollow(tmp) as fh:
-            fh.write(state)
-        os.replace(tmp, STATE_FILE)
+        safefile.write_atomic(STATE_FILE, state)
     except OSError:
         pass
 
@@ -269,7 +272,7 @@ def open_mic():
     real file to write to.
     """
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-    err = open_nofollow(os.path.join(STATE_DIR, "pw-record.log"))
+    err = safefile.open_w_nofollow(os.path.join(STATE_DIR, "pw-record.log"))
     return subprocess.Popen(
         ["pw-record", "--rate=16000", "--channels=1", "--format=s16",
          "--latency=40ms", "-"],
@@ -411,8 +414,11 @@ def ask_agent(agent, prompt):
 
     if outfile:
         try:
-            with open(outfile) as fh:
-                return fh.read().strip()
+            # mkstemp made this one, but it lives in a world-writable /tmp
+            # for the lifetime of the agent call: read it back the same
+            # careful way as anything else, and cap what a runaway agent
+            # can make us hold in memory.
+            return safefile.read_text(outfile, safefile.MAX_TEXT_BYTES).strip()
         except OSError:
             log(f"agent '{agent.name}' wrote no reply file")
             return ""
