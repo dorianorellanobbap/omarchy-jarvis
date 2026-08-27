@@ -273,19 +273,48 @@ MAX_VOICE_BYTES = 256 << 20
 MAX_META_BYTES = 1 << 20
 
 
-def fetch(url, dest, limit):
-    """Download to a private temp file and rename, so a failure never leaves a
-    half-written voice that piper would choke on.
+# Every voice the panel can install, locked to the sha256 HuggingFace served
+# when tools/genvoicelock.py was last run. install.sh has always verified the
+# default voice this way; the picker downloads the other nine, and a voice
+# file is parsed by onnxruntime, so it gets the same treatment rather than
+# being trusted because it arrived over TLS.
+VOICE_LOCK = os.path.join(HERE, "voices.sha256")
 
-    The temp file is unpredictably named inside the destination directory
-    rather than the old, guessable `dest + ".part"`, and the transfer stops
-    at `limit` bytes instead of writing whatever the server keeps sending.
+
+def voice_hashes():
+    """{filename: sha256} from the committed lock, or {} if it is missing."""
+    try:
+        text = safefile.read_text(VOICE_LOCK, safefile.MAX_CONFIG_BYTES)
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        digest, _, name = line.partition("  ")
+        if digest and name:
+            out[name.strip()] = digest.strip()
+    return out
+
+
+def fetch(url, dest, limit, expected):
+    """Download to a private temp file, verify, then rename.
+
+    Nothing lands at `dest` until the bytes hash to `expected`, so a failed
+    or tampered transfer leaves no half-written voice for piper to choke on
+    and no unverified model for onnxruntime to parse. The temp file is
+    unpredictably named inside the destination directory rather than the old,
+    guessable `dest + ".part"`, and the transfer stops at `limit` bytes
+    instead of writing whatever the server keeps sending.
     """
+    import hashlib
     import urllib.error
     import urllib.request
 
     try:
         with safefile.private_temp(dest, suffix=".part") as (fd, tmp):
+            digest = hashlib.sha256()
             written = 0
             with os.fdopen(fd, "wb") as fh:
                 with urllib.request.urlopen(url, timeout=120) as response:
@@ -297,7 +326,13 @@ def fetch(url, dest, limit):
                         if written > limit:
                             raise SystemExit(
                                 f"download exceeded {limit} bytes; aborted")
+                        digest.update(chunk)
                         fh.write(chunk)
+            got = digest.hexdigest()
+            if got != expected:
+                raise SystemExit(
+                    f"checksum mismatch for {os.path.basename(dest)}: "
+                    f"expected {expected}, got {got}. Refusing to install it.")
             safefile.commit(tmp, dest, 0o644)
     except urllib.error.URLError as exc:
         raise SystemExit(f"download failed: {exc.reason}")
@@ -314,10 +349,20 @@ def cmd_install_voice(daemon, args):
     onnx = os.path.join(target_dir, vid + ".onnx")
     meta = onnx + ".json"
 
+    expected = voice_hashes()
+    if not expected:
+        raise SystemExit(f"no voice checksums at {VOICE_LOCK}; "
+                         "refusing to download an unverifiable voice")
+    for name in (vid + ".onnx", vid + ".onnx.json"):
+        if name not in expected:
+            raise SystemExit(f"{name} is not in {VOICE_LOCK}; "
+                             "refusing to download an unverifiable voice")
+
     if not os.path.exists(onnx):
-        fetch(voice_url(vid), onnx, MAX_VOICE_BYTES)
+        fetch(voice_url(vid), onnx, MAX_VOICE_BYTES, expected[vid + ".onnx"])
     if not os.path.exists(meta):
-        fetch(voice_url(vid, ".onnx.json"), meta, MAX_META_BYTES)
+        fetch(voice_url(vid, ".onnx.json"), meta, MAX_META_BYTES,
+              expected[vid + ".onnx.json"])
 
     # A truncated download and an HTML error page both land as a small file;
     # either one would fail later inside piper with nothing useful to show.

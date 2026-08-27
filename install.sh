@@ -50,6 +50,10 @@ cp "$SRC/daemon/jarvis-config"    "$JARVIS_DIR/"
 # its own directory, so it lands in both.
 cp "$SRC/daemon/safefile.py"      "$JARVIS_DIR/"
 cp "$SRC/daemon/safefile.py"      "$JARVIS_DIR/bin/"
+# Checksums for every voice the settings panel can download. Without it,
+# jarvis-config refuses to install a voice rather than installing an
+# unverified one.
+cp "$SRC/daemon/voices.sha256"    "$JARVIS_DIR/"
 cp "$SRC/daemon/en_US-amy-medium.onnx.json" "$JARVIS_DIR/voices/"
 chmod +x "$JARVIS_DIR/bin/jarvis-open" "$JARVIS_DIR/jarvis-listen.py" "$JARVIS_DIR/jarvis-config"
 
