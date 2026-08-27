@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "dorian.voice",
+  "name": "Voice Assistant",
+  "version": "1.0.0",
+  "author": "Dorian",
+  "description": "Wake-word voice assistant: ask a question out loud, hear the answer. Arm it from the bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Voice Assistant",
+    "description": "Arm/disarm the wake-word listener and show what it is doing",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "unit": "jarvis",
+      "pollSeconds": 1,
+      "notify": true
+    },
+    "schema": [
+      {
+        "key": "unit",
+        "type": "string",
+        "label": "systemd user unit"
+      },
+      {
+        "key": "pollSeconds",
+        "type": "number",
+        "label": "Poll interval (seconds)"
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Notify when armed/disarmed"
+      }
+    ]
+  }
+}

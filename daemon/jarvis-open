@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# The only shell command the voice assistant is allowed to run.
+#
+# claude -p starts with no tools enabled, so the daemon passes
+# --allowedTools 'Bash(jarvis-open:*)'. That makes this script the entire
+# blast radius: it can launch an installed desktop app or open an http(s)
+# URL, and nothing else.
+set -euo pipefail
+
+usage() {
+  echo "usage: jarvis-open list | app <name> | url <https://...>" >&2
+  exit 2
+}
+
+app_dirs=("$HOME/.local/share/applications" /usr/share/applications)
+
+# Every installed .desktop entry as "<id>\t<Name>", minus the hidden ones.
+entries() {
+  local d f id name nodisplay
+  for d in "${app_dirs[@]}"; do
+    [[ -d $d ]] || continue
+    for f in "$d"/*.desktop; do
+      [[ -e $f ]] || continue
+      id=$(basename "$f" .desktop)
+      nodisplay=$(grep -m1 '^NoDisplay=' "$f" 2>/dev/null | cut -d= -f2 || true)
+      [[ ${nodisplay,,} == true ]] && continue
+      name=$(grep -m1 '^Name=' "$f" 2>/dev/null | cut -d= -f2- || true)
+      printf '%s\t%s\n' "$id" "${name:-$id}"
+    done
+  done | sort -u -t$'\t' -k1,1
+}
+
+# Exact id, then exact name, then substring on either. First hit wins.
+resolve() {
+  local q=${1,,} all id name
+  all=$(entries)
+  while IFS=$'\t' read -r id name; do
+    [[ ${id,,} == "$q" || ${name,,} == "$q" ]] && { echo "$id"; return 0; }
+  done <<<"$all"
+  while IFS=$'\t' read -r id name; do
+    [[ ${id,,} == *"$q"* || ${name,,} == *"$q"* ]] && { echo "$id"; return 0; }
+  done <<<"$all"
+  return 1
+}
+
+# Detach so the app outlives this script and the daemon's subprocess timeout.
+spawn() {
+  if command -v uwsm >/dev/null && [[ -n ${UWSM_WAIT_VARNAMES:-} ]]; then
+    setsid -f uwsm app -- "$@" >/dev/null 2>&1 && return 0
+  fi
+  setsid -f "$@" >/dev/null 2>&1
+}
+
+case "${1:-}" in
+  list)
+    entries | cut -f2
+    ;;
+  app)
+    shift; [[ $# -ge 1 ]] || usage
+    query="$*"
+    if ! id=$(resolve "$query"); then
+      echo "no installed app matches '$query'" >&2
+      exit 1
+    fi
+    spawn "$id.desktop" || setsid -f gtk-launch "$id.desktop" >/dev/null 2>&1
+    echo "launched $id"
+    ;;
+  url)
+    shift; [[ $# -eq 1 ]] || usage
+    url="$1"
+    # Only ever hand a real web URL to the browser.
+    [[ $url =~ ^https?://[^[:space:]\"\'\\]+$ ]] || {
+      echo "refusing non-http(s) url" >&2; exit 1; }
+    spawn xdg-open "$url" || setsid -f xdg-open "$url" >/dev/null 2>&1
+    echo "opened $url"
+    ;;
+  *) usage ;;
+esac

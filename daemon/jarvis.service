@@ -1,0 +1,20 @@
+[Unit]
+Description=Jarvis wake-word voice assistant
+Documentation=https://github.com/dscripka/openWakeWord
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+Environment=OMP_NUM_THREADS=1
+# Agent CLIs are commonly installed to ~/.local/bin or via mise shims; both
+# are listed so either layout resolves. Absent entries are simply skipped.
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/jarvis/venv/bin/python %h/.local/share/jarvis/jarvis-listen.py
+Restart=on-failure
+RestartSec=3
+# Keep the always-on listener off the performance cores' backs.
+Nice=5
+
+[Install]
+WantedBy=default.target

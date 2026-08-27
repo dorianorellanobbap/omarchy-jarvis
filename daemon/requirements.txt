@@ -1,0 +1,14 @@
+flatbuffers==25.12.19
+joblib==1.5.3
+narwhals==2.25.0
+numpy==2.5.2
+onnxruntime==1.29.0
+openwakeword==0.4.0
+packaging==26.3
+pathvalidate==3.3.1
+piper-tts==1.7.0
+protobuf==7.36.0
+scikit-learn==1.9.0
+scipy==1.18.1
+threadpoolctl==3.6.0
+tqdm==4.70.0

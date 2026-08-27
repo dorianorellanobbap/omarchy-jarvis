@@ -1,0 +1,66 @@
+# Jarvis configuration. Copy to ~/.config/jarvis/config.toml and edit.
+# Every value here is a default -- delete anything you don't want to change.
+
+# Which agent below answers. Must match an [agents.*] section.
+agent = "claude"
+
+# Wake word. These four ship with openWakeWord; no download needed:
+#   hey_jarvis  alexa  hey_mycroft  hey_marvin
+wake_word = "hey_jarvis"
+
+# Piper voice file, relative to ~/.local/share/jarvis/voices/ or absolute.
+voice = "en_US-amy-medium.onnx"
+
+
+[listen]
+wake_threshold = 0.5   # openWakeWord score 0-1. Lower = more sensitive.
+silence_tail   = 1.2   # seconds of quiet that ends your command
+min_speech     = 0.4   # ignore blips shorter than this
+max_command    = 15.0  # hard cap on one utterance
+cooldown       = 1.0   # ignore the wake word this long after replying
+
+
+# ---------------------------------------------------------------------------
+# Agents
+#
+# `command` is argv, never a shell string. These placeholders are substituted
+# into individual arguments:
+#
+#   {prompt}   what you said, transcribed
+#   {system}   the voice-style system prompt Jarvis builds
+#   {outfile}  a temp file path. If present, Jarvis reads the reply from that
+#              file instead of stdout -- for CLIs that print progress logs.
+#
+# `actions = true` lets the agent launch apps and open URLs through the
+# `jarvis-open` wrapper, which is the entire blast radius it gets. It only
+# works if the CLI can be told to permit exactly one command. Left false, the
+# agent can only answer out loud.
+#
+# Both presets below are tested. Adding another CLI is just another section --
+# run `jarvis-listen --agents` to see what's configured and installed, and
+# `jarvis-listen --ask "hello"` to try one without using the mic. If you get a
+# new one working, a PR adding it is welcome.
+# ---------------------------------------------------------------------------
+
+[agents.claude]
+# Claude Code. Starts with every tool disabled, so --allowedTools grants
+# exactly one command and nothing else.
+command = [
+  "claude", "-p", "{prompt}",
+  "--append-system-prompt", "{system}",
+  "--allowedTools", "Bash(jarvis-open:*)",
+]
+actions = true
+
+[agents.codex]
+# OpenAI Codex. Answer-only: its sandbox modes are all-or-nothing, and the one
+# that would permit jarvis-open (danger-full-access) removes sandboxing
+# entirely -- too big a hammer for a voice assistant. --output-last-message
+# gives us the reply without the event log.
+command = [
+  "codex", "exec", "--skip-git-repo-check", "--ephemeral",
+  "-s", "read-only", "--color", "never",
+  "-o", "{outfile}",
+  "{system}\n\n{prompt}",
+]
+actions = false
