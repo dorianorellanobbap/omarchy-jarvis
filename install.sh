@@ -36,7 +36,7 @@ command -v voxtype >/dev/null || warn "'voxtype' not on PATH -- Jarvis needs it 
 if [[ $SRC != "$PLUGIN_DIR" ]]; then
   say "Installing the bar widget"
   mkdir -p "$PLUGIN_DIR"
-  cp "$SRC/manifest.json" "$SRC/BarWidget.qml" "$PLUGIN_DIR/"
+  cp "$SRC/manifest.json" "$SRC/BarWidget.qml" "$SRC/Panel.qml" "$PLUGIN_DIR/"
   echo "  -> $PLUGIN_DIR"
 fi
 
@@ -45,8 +45,18 @@ say "Installing the daemon"
 mkdir -p "$JARVIS_DIR/bin" "$JARVIS_DIR/voices"
 cp "$SRC/daemon/jarvis-listen.py" "$JARVIS_DIR/"
 cp "$SRC/daemon/jarvis-open"      "$JARVIS_DIR/bin/"
+cp "$SRC/daemon/jarvis-config"    "$JARVIS_DIR/"
 cp "$SRC/daemon/en_US-amy-medium.onnx.json" "$JARVIS_DIR/voices/"
-chmod +x "$JARVIS_DIR/bin/jarvis-open" "$JARVIS_DIR/jarvis-listen.py"
+chmod +x "$JARVIS_DIR/bin/jarvis-open" "$JARVIS_DIR/jarvis-listen.py" "$JARVIS_DIR/jarvis-config"
+
+# The settings panel shells out to jarvis-config, which needs the venv's
+# interpreter. Wrap it so neither the panel nor a person has to know that.
+cat > "$JARVIS_DIR/bin/jarvis-config" <<'WRAPPER'
+#!/usr/bin/env bash
+JARVIS_DIR="${JARVIS_DIR:-$HOME/.local/share/jarvis}"
+exec "$JARVIS_DIR/venv/bin/python" "$JARVIS_DIR/jarvis-config" "$@"
+WRAPPER
+chmod +x "$JARVIS_DIR/bin/jarvis-config"
 
 # --- python venv -----------------------------------------------------------
 say "Building the venv (onnxruntime + scipy, this takes a minute)"
@@ -113,7 +123,8 @@ Done. Next:
   2. Arm it from the widget, or: systemctl --user start jarvis
   3. Say "hey jarvis", then ask something.
 
-  Pick a different agent or wake word in $CONFIG_DIR/config.toml
+  Most settings are in the widget's panel: click it in the bar.
+  Or edit $CONFIG_DIR/config.toml directly
   See what's configured:  $JARVIS_DIR/venv/bin/python $JARVIS_DIR/jarvis-listen.py --agents
   Test without the mic:   $JARVIS_DIR/venv/bin/python $JARVIS_DIR/jarvis-listen.py --ask "hello"
 DONE

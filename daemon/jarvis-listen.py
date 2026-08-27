@@ -27,8 +27,6 @@ import tomllib
 import wave
 
 import numpy as np
-import openwakeword
-from openwakeword.model import Model
 
 HOME = os.path.expanduser("~")
 JARVIS_DIR = os.path.join(HOME, ".local", "share", "jarvis")
@@ -95,7 +93,9 @@ _running = True
 
 
 def log(msg):
-    print(f"[jarvis] {msg}", flush=True)
+    # stderr, not stdout: jarvis-config prints JSON on stdout and the bar
+    # widget parses it. journald captures both streams either way.
+    print(f"[jarvis] {msg}", file=sys.stderr, flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -197,6 +197,8 @@ def resolve_wake_model(cfg):
     Returns (path, score_key). The score key is the file stem, which is what
     Model.predict() uses to label its scores.
     """
+    import openwakeword
+
     name = cfg.get("wake_word", DEFAULTS["wake_word"])
     models_dir = os.path.join(os.path.dirname(openwakeword.__file__),
                               "resources", "models")
@@ -471,6 +473,8 @@ def handle_command(mic, ambient, agent, voice, listen):
 # --------------------------------------------------------------------------
 
 def listen_forever(agent, voice, wake_path, wake_key, listen):
+    from openwakeword.model import Model
+
     model = Model(wakeword_model_paths=[wake_path])
     log(f"model loaded, listening for '{wake_key.rsplit('_v', 1)[0].replace('_', ' ')}'")
 

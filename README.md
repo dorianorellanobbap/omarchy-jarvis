@@ -59,11 +59,19 @@ widget to your bar and log out and back in.
 
 ## Use
 
-Left click the widget to arm or disarm, right click to restart. Armed, it costs
-about 3% of one core. Say the wake word, wait for the chime, then talk.
+| Click | Does |
+| --- | --- |
+| Left | Open the settings panel |
+| Right | Arm / disarm |
+| Middle | Restart the listener |
+
+Armed, it costs about 3% of one core. Say the wake word, wait for the chime,
+then talk. The widget icon shows where it is: waiting, listening, thinking,
+speaking.
 
 ```sh
 J=~/.local/share/jarvis
+$J/bin/jarvis-config show                                # settings as JSON
 $J/venv/bin/python $J/jarvis-listen.py --agents          # what's configured
 $J/venv/bin/python $J/jarvis-listen.py --check           # verify deps
 $J/venv/bin/python $J/jarvis-listen.py --ask "hello"     # test without the mic
@@ -72,13 +80,25 @@ journalctl --user -u jarvis -f                           # watch it work
 
 ## Configure
 
-`~/.config/jarvis/config.toml` — see [`config/config.toml.example`](config/config.toml.example)
-for every option, commented.
+The panel covers the everyday settings — agent, wake word, sensitivity, how
+long a pause ends your question, how long a question may run. Changes are
+written straight to the config file. The listener reads its config once at
+startup, so the panel restarts it for you when it is armed; when it is
+disarmed the change simply applies next time you arm it.
+
+Everything else lives in `~/.config/jarvis/config.toml` — see
+[`config/config.toml.example`](config/config.toml.example) for every option,
+commented.
 
 ```toml
 agent     = "claude"        # or "codex"
 wake_word = "hey_jarvis"    # or alexa, hey_mycroft, hey_marvin
 ```
+
+Hand-edit it freely: writes from the panel go through `jarvis-config`, which
+rewrites a single line and leaves the rest of the file — comments included —
+exactly as you wrote it. It also refuses to touch anything under `[agents.*]`,
+so no click in the panel can change the command the daemon executes.
 
 ### Adding an agent
 
@@ -119,6 +139,11 @@ mic ──> openWakeWord ──> [wake word] ──> record until silence
 
 Pipeline state is written to `$XDG_RUNTIME_DIR/jarvis/state`, so the widget
 reads a file instead of talking to the process.
+
+The settings panel is QML and the daemon's config is TOML, which QML cannot
+parse. Rather than teach the widget about TOML — or move the settings somewhere
+the daemon would need Omarchy to read them — the panel shells out to
+`jarvis-config`, which prints JSON and writes single lines.
 
 ## Notes from building it
 

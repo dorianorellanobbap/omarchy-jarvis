@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Read and write ~/.config/jarvis/config.toml from outside Python.
+
+The bar widget's settings panel is QML, which has no TOML support, so it
+shells out to this. Two commands:
+
+    jarvis-config show            effective settings as JSON
+    jarvis-config set KEY VALUE   change one setting
+
+`set` rewrites a single line in place rather than re-serialising the file,
+so the comments people rely on when hand-editing survive.
+"""
+
+import argparse
+import importlib.util
+import json
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+    os.path.expanduser("~"), ".config")
+CONFIG_PATH = os.path.join(CONFIG_HOME, "jarvis", "config.toml")
+
+
+def load_daemon():
+    """Import jarvis-listen.py for DEFAULTS/merge/Agent, so the two agree."""
+    path = os.path.join(HERE, "jarvis-listen.py")
+    spec = importlib.util.spec_from_file_location("jarvis_listen", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Only these may be written from the panel. Anything touching how an agent is
+# invoked stays in the file, editable by hand -- a GUI that can rewrite argv
+# is a GUI that can be talked into running something.
+WRITABLE = {
+    "agent":                  "str",
+    "wake_word":              "str",
+    "voice":                  "str",
+    "listen.wake_threshold":  "float",
+    "listen.silence_tail":    "float",
+    "listen.min_speech":      "float",
+    "listen.max_command":     "float",
+    "listen.cooldown":        "float",
+}
+
+
+def coerce(key, raw):
+    kind = WRITABLE[key]
+    if kind == "float":
+        try:
+            return float(raw)
+        except ValueError:
+            raise SystemExit(f"{key} must be a number, got {raw!r}")
+    return raw
+
+
+def validate(daemon, key, value, config_path):
+    """Reject values the daemon would refuse at startup, while the panel can
+    still show an error -- better than a listener that dies on restart."""
+    if key == "wake_word" and value not in daemon.WAKE_WORDS:
+        raise SystemExit(f"unknown wake_word {value!r}. "
+                         f"Available: {', '.join(daemon.WAKE_WORDS)}")
+    if key == "agent":
+        cfg = daemon.load_config(config_path)
+        if value not in cfg.get("agents", {}):
+            known = ", ".join(sorted(cfg.get("agents", {})))
+            raise SystemExit(f"unknown agent {value!r}. Configured: {known}")
+    if key == "listen.wake_threshold" and not 0.0 < value <= 1.0:
+        raise SystemExit("wake_threshold must be between 0 and 1")
+    if key.startswith("listen.") and key != "listen.wake_threshold" and value <= 0:
+        raise SystemExit(f"{key} must be positive")
+
+
+def format_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        # Keep it looking like the hand-written file: 1.2 not 1.2000000001
+        return f"{value:g}"
+    if isinstance(value, (int,)):
+        return str(value)
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+TABLE_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+
+
+def set_key(path, dotted, value):
+    """Replace one `key = value` line, preserving comments and layout.
+
+    The key may be top-level ("agent") or one level deep ("listen.cooldown").
+    Missing tables and missing keys are created.
+    """
+    table, _, leaf = dotted.rpartition(".")
+    rendered = f"{leaf} = {format_value(value)}"
+
+    if os.path.exists(path):
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+    else:
+        lines = []
+
+    key_re = re.compile(rf"^(\s*){re.escape(leaf)}(\s*)=", re.ASCII)
+
+    def trailing_comment(line):
+        """The ` # ...` tail of a line, ignoring any # inside a quoted value."""
+        quote = None
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == quote and line[i - 1] != "\\":
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#":
+                pad = len(line[:i]) - len(line[:i].rstrip())
+                return " " * max(1, pad) + line[i:]
+        return ""
+
+    current = ""          # table we are inside of, "" for top level
+    table_end = None      # last line index belonging to the target table
+    for i, line in enumerate(lines):
+        match = TABLE_RE.match(line)
+        if match:
+            current = match.group(1).strip()
+            if current == table:
+                table_end = i
+            continue
+        if current == table:
+            if line.strip():
+                table_end = i
+            if key_re.match(line):
+                # Preserve the original indentation and alignment.
+                indent = key_re.match(line).group(1)
+                lines[i] = f"{indent}{rendered}{trailing_comment(line)}"
+                write(path, lines)
+                return "updated"
+
+    # Key absent: append to its table, creating the table if needed.
+    if table and table_end is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"[{table}]")
+        lines.append(rendered)
+    elif table_end is None:
+        lines.insert(0, rendered)
+    else:
+        lines.insert(table_end + 1, rendered)
+    write(path, lines)
+    return "added"
+
+
+def write(path, lines):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write("\n".join(lines).rstrip("\n") + "\n")
+    os.replace(tmp, path)
+
+
+def cmd_show(daemon, args):
+    cfg = daemon.load_config(args.config)
+    listen = daemon.merge(daemon.DEFAULTS["listen"], cfg.get("listen", {}))
+
+    agents = []
+    for name in sorted(cfg.get("agents", {})):
+        try:
+            agent = daemon.Agent(name, cfg["agents"][name])
+        except ValueError:
+            continue
+        agents.append({
+            "name": name,
+            "actions": agent.actions,
+            "installed": bool(__import__("shutil").which(agent.executable)),
+        })
+
+    print(json.dumps({
+        "config_path": args.config,
+        "agent": cfg.get("agent"),
+        "wake_word": cfg.get("wake_word"),
+        "voice": cfg.get("voice"),
+        "listen": listen,
+        "agents": agents,
+        "wake_words": list(daemon.WAKE_WORDS),
+    }, indent=2))
+    return 0
+
+
+def cmd_set(daemon, args):
+    if args.key not in WRITABLE:
+        raise SystemExit(f"{args.key!r} is not settable from here. "
+                         f"Settable: {', '.join(sorted(WRITABLE))}")
+    value = coerce(args.key, args.value)
+    validate(daemon, args.key, value, args.config)
+    result = set_key(args.config, args.key, value)
+    print(f"{result} {args.key} = {format_value(value)}")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="jarvis-config")
+    parser.add_argument("--config", default=CONFIG_PATH)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("show", help="print effective settings as JSON")
+    setp = sub.add_parser("set", help="change one setting")
+    setp.add_argument("key")
+    setp.add_argument("value")
+
+    args = parser.parse_args()
+    daemon = load_daemon()
+    return cmd_show(daemon, args) if args.cmd == "show" else cmd_set(daemon, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

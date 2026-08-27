@@ -64,6 +64,45 @@ BarWidget {
     bar.run("notify-send -a Jarvis " + bar.shellQuote("Voice assistant") + " " + bar.shellQuote(body))
   }
 
+  // ---- settings panel ------------------------------------------------
+  // The panel is a separate QML file loaded lazily and handed a reference
+  // back to this widget, so it can read the live pipeline state and arm or
+  // disarm without duplicating any of it.
+  readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+
+  function openPanel()   { if (panelLoader.item) panelLoader.item.open() }
+  function closePanel()  { if (panelLoader.item) panelLoader.item.close() }
+  function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
+
+  readonly property bool popoutSwitchClosing:
+    panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+  function closeForPopoutSwitch() {
+    if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
+  }
+
+  function injectPanel() {
+    var target = panelLoader.item
+    if (!target) return
+    if ("bar" in target) target.bar = root.bar
+    if ("settings" in target) target.settings = root.settings
+    if ("anchorItem" in target) target.anchorItem = button
+    if ("hostWidget" in target) target.hostWidget = root
+  }
+
+  onBarChanged: injectPanel()
+  onSettingsChanged: injectPanel()
+
+  Loader {
+    id: panelLoader
+    active: true
+    source: Qt.resolvedUrl("Panel.qml")
+    visible: false
+    onLoaded: {
+      root.injectPanel()
+      Qt.callLater(root.injectPanel)
+    }
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -112,6 +151,9 @@ BarWidget {
     function arm(): void { if (!root.armed) root.toggle() }
     function disarm(): void { if (root.armed) root.toggle() }
     function restart(): void { root.restart() }
+    function settings(): void { root.togglePanel() }
+    function open(): void { root.openPanel() }
+    function close(): void { root.closePanel() }
   }
 
   WidgetButton {
@@ -121,16 +163,19 @@ BarWidget {
     text: root.icon
     // Light up only while it is actually doing something, so an armed but
     // idle listener stays visually quiet.
-    active: root.armed && root.pipeline !== "idle"
+    active: (root.armed && root.pipeline !== "idle") || root.opened
     fixedWidth: root.vertical ? -1 : 0
     fixedHeight: root.vertical ? root.barSize : -1
     tooltipText: root.stateLabel
       + (root.armed ? "\n~3% of one core while armed" : "")
-      + "\nleft: " + (root.armed ? "disarm" : "arm") + " · right: restart"
+      + "\nleft: settings · right: " + (root.armed ? "disarm" : "arm")
 
+    // Left opens the panel, matching every other bar widget. Arming stays one
+    // click away on the right button, and from the switch inside the panel.
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.restart()
-      else root.toggle()
+      if (b === Qt.RightButton) root.toggle()
+      else if (b === Qt.MiddleButton) root.restart()
+      else root.togglePanel()
     }
   }
 }
