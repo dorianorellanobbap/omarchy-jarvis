@@ -122,10 +122,14 @@ BarWidget {
     // lets another local user plant `state` as a FIFO, and this poll runs
     // every second. Match the daemon's private fallback, bound the read, and
     // cap how long it may block if the file is a pipe anyway.
+    // `unit` is a widget setting, so it is a string someone can type. It is
+    // passed as a positional argument and referenced as "$1", never pasted
+    // into the script text -- concatenating it would make a bar setting able
+    // to carry its own shell.
     command: ["sh", "-c",
-      "systemctl --user is-active " + root.unit +
-      " 2>/dev/null; timeout 2 head -c 64 " +
-      "\"${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/jarvis/state\" 2>/dev/null"]
+      "systemctl --user is-active \"$1\" 2>/dev/null; timeout 2 head -c 64 " +
+      "\"${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/jarvis/state\" 2>/dev/null",
+      "jarvis-state", root.unit]
     stdout: StdioCollector {
       id: stateOut
       waitForEnd: true

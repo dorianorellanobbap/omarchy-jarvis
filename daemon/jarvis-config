@@ -51,6 +51,17 @@ WRITABLE = {
 }
 
 
+# A control character in a string value would be written into config.toml
+# literally. A newline in particular ends the `key = "value"` line early and
+# turns the rest of the value into further TOML -- which does not become an
+# injected [agents.*] section (the value's opening quote is never closed, so
+# the file stops parsing), but it does silently corrupt the config. The
+# daemon then falls back to DEFAULTS, and DEFAULTS ships `actions = true`:
+# someone who had deliberately set `actions = false` would come back armed.
+# Fail on the write instead of failing open on the next restart.
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def coerce(key, raw):
     kind = WRITABLE[key]
     if kind == "float":
@@ -58,6 +69,8 @@ def coerce(key, raw):
             return float(raw)
         except ValueError:
             raise SystemExit(f"{key} must be a number, got {raw!r}")
+    if CONTROL_CHARS.search(raw):
+        raise SystemExit(f"{key} may not contain control characters")
     return raw
 
 

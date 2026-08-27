@@ -97,6 +97,10 @@ def entries():
             entry_id = filename[: -len(".desktop")]
             if entry_id in found:
                 continue
+            # An entry named "--version.desktop" would reach gtk-launch as an
+            # option rather than an app. Nothing legitimate is named this way.
+            if entry_id.startswith("-"):
+                continue
             if len(found) >= MAX_ENTRIES:
                 return sorted(found.items())
             parsed = read_entry(os.path.join(directory, filename))
@@ -144,7 +148,7 @@ def launch(entry_id):
     if have("uwsm") and os.environ.get("UWSM_WAIT_VARNAMES"):
         spawn(["uwsm", "app", "--", desktop])
     elif have("gtk-launch"):
-        spawn(["gtk-launch", desktop])
+        spawn(["gtk-launch", "--", desktop])
     else:
         raise SystemExit("no way to launch a .desktop entry "
                          "(install uwsm or gtk-launch)")
