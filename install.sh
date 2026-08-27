@@ -61,8 +61,13 @@ chmod +x "$JARVIS_DIR/bin/jarvis-config"
 # --- python venv -----------------------------------------------------------
 say "Building the venv (onnxruntime + scipy, this takes a minute)"
 [[ -x "$JARVIS_DIR/venv/bin/python" ]] || python3 -m venv "$JARVIS_DIR/venv"
-"$JARVIS_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$JARVIS_DIR/venv/bin/pip" install --quiet -r "$SRC/daemon/requirements.txt"
+
+# Every artifact is verified against a sha256 committed to this repo, pip
+# itself included. --require-hashes also makes pip refuse to install anything
+# not listed, so a new transitive dependency cannot slip in unreviewed.
+# Deliberately no `--upgrade pip` beforehand: that would pull an unconstrained
+# release from the live index to install a hash-locked tree with.
+"$JARVIS_DIR/venv/bin/pip" install --quiet --require-hashes -r "$SRC/daemon/requirements.lock"
 
 # openWakeWord 0.4.0 bundles the wake-word models and the feature
 # extractors in the wheel, so there is nothing to download -- just
