@@ -69,6 +69,10 @@ def validate(daemon, key, value, config_path):
         if value not in cfg.get("agents", {}):
             known = ", ".join(sorted(cfg.get("agents", {})))
             raise SystemExit(f"unknown agent {value!r}. Configured: {known}")
+    if key == "voice":
+        path = value if os.path.isabs(value) else os.path.join(voices_dir(), value)
+        if not os.path.exists(path):
+            raise SystemExit(f"no such voice file: {path}")
     if key == "listen.wake_threshold" and not 0.0 < value <= 1.0:
         raise SystemExit("wake_threshold must be between 0 and 1")
     if key.startswith("listen.") and key != "listen.wake_threshold" and value <= 0:
@@ -84,6 +88,43 @@ def format_value(value):
     if isinstance(value, (int,)):
         return str(value)
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# Piper voices, each verified to resolve on HuggingFace. An id is
+# {lang}-{name}-{quality}, which is enough to rebuild its URL, so this stays a
+# flat list rather than a table of paths. Anything not listed here still works
+# -- put an absolute path in `voice` and Jarvis will use it.
+VOICE_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+VOICE_CATALOG = [
+    "en_US-amy-medium",
+    "en_US-lessac-medium",
+    "en_US-ryan-medium",
+    "en_US-joe-medium",
+    "en_US-kusal-medium",
+    "en_US-hfc_female-medium",
+    "en_US-bryce-medium",
+    "en_GB-alan-medium",
+    "en_GB-cori-medium",
+    "en_GB-northern_english_male-medium",
+]
+
+
+def voice_url(vid, suffix=".onnx"):
+    lang, name, quality = vid.split("-")
+    family = lang.split("_")[0]
+    return f"{VOICE_BASE}/{family}/{lang}/{name}/{quality}/{vid}{suffix}"
+
+
+def voices_dir():
+    return os.path.join(os.path.expanduser("~"), ".local", "share",
+                        "jarvis", "voices")
+
+
+def installed_voices():
+    d = voices_dir()
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d) if f.endswith(".onnx"))
 
 
 TABLE_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
@@ -185,7 +226,73 @@ def cmd_show(daemon, args):
         "listen": listen,
         "agents": agents,
         "wake_words": list(daemon.WAKE_WORDS),
+        "voices": voice_list(),
     }, indent=2))
+    return 0
+
+
+def voice_list():
+    """Every voice the panel may offer: what is on disk, plus the catalog."""
+    on_disk = installed_voices()
+    out = [{"id": os.path.splitext(f)[0], "file": f, "installed": True}
+           for f in on_disk]
+    known = {v["id"] for v in out}
+    for vid in VOICE_CATALOG:
+        if vid not in known:
+            out.append({"id": vid, "file": vid + ".onnx", "installed": False})
+    return out
+
+
+def fetch(url, dest):
+    """Download to a temp file and rename, so a failure never leaves a
+    half-written voice that piper would choke on."""
+    import urllib.error
+    import urllib.request
+
+    tmp = dest + ".part"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            with open(tmp, "wb") as fh:
+                while True:
+                    chunk = response.read(1 << 16)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+    except urllib.error.URLError as exc:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise SystemExit(f"download failed: {exc.reason}")
+    os.replace(tmp, dest)
+
+
+def cmd_install_voice(daemon, args):
+    vid = args.voice
+    if vid not in VOICE_CATALOG:
+        raise SystemExit(f"unknown voice {vid!r}. "
+                         f"Known: {', '.join(VOICE_CATALOG)}")
+
+    target_dir = voices_dir()
+    os.makedirs(target_dir, exist_ok=True)
+    onnx = os.path.join(target_dir, vid + ".onnx")
+    meta = onnx + ".json"
+
+    if not os.path.exists(onnx):
+        fetch(voice_url(vid), onnx)
+    if not os.path.exists(meta):
+        fetch(voice_url(vid, ".onnx.json"), meta)
+
+    # A truncated download and an HTML error page both land as a small file;
+    # either one would fail later inside piper with nothing useful to show.
+    if os.path.getsize(onnx) < 1_000_000:
+        os.unlink(onnx)
+        raise SystemExit("downloaded voice looks truncated; try again")
+    try:
+        with open(meta) as fh:
+            json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        raise SystemExit("voice metadata is not valid JSON; try again")
+
+    print(f"installed {vid}")
     return 0
 
 
@@ -208,10 +315,16 @@ def main():
     setp = sub.add_parser("set", help="change one setting")
     setp.add_argument("key")
     setp.add_argument("value")
+    iv = sub.add_parser("install-voice", help="download a piper voice")
+    iv.add_argument("voice")
 
     args = parser.parse_args()
     daemon = load_daemon()
-    return cmd_show(daemon, args) if args.cmd == "show" else cmd_set(daemon, args)
+    return {
+        "show": cmd_show,
+        "set": cmd_set,
+        "install-voice": cmd_install_voice,
+    }[args.cmd](daemon, args)
 
 
 if __name__ == "__main__":

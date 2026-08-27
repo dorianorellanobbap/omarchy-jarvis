@@ -54,6 +54,10 @@ installs a systemd **user** unit, writes a starter config, and verifies the
 result. It is idempotent — re-run it any time. Then add the **Voice Assistant**
 widget to your bar and log out and back in.
 
+The unit is installed but **not enabled**: nothing holds the mic open until you
+arm it from the widget. If you want it armed from login, that is an explicit
+`systemctl --user enable jarvis`.
+
 **Requires:** Python 3.11+, `curl`, `jq`, PipeWire (`pw-record`/`pw-play`),
 `voxtype` (ships with Omarchy), and the CLI of whichever agent you pick.
 

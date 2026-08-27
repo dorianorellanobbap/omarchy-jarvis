@@ -103,8 +103,11 @@ say "Installing the systemd user unit"
 mkdir -p "$UNIT_DIR"
 cp "$SRC/daemon/jarvis.service" "$UNIT_DIR/"
 systemctl --user daemon-reload
-systemctl --user enable jarvis.service >/dev/null
-echo "  -> enabled (not started; the listener is off until you arm it)"
+# Deliberately not `enable`d. Enabling would start the listener at every
+# login, which for an always-on microphone is not a default anyone should
+# get without asking for it. The widget starts and stops it on demand.
+echo "  -> installed, not enabled: the mic stays off until you arm it"
+echo "     (want it armed at login? systemctl --user enable jarvis)"
 
 # --- verify ----------------------------------------------------------------
 say "Checking the install"

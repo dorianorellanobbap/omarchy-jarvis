@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Ui
 
@@ -6,7 +7,8 @@ import qs.Ui
 //
 // The listener is a systemd user unit that holds the mic open and runs
 // openWakeWord continuously (~3% of one core), so it is off by default and
-// this widget is the switch. Left click toggles it, right click restarts it.
+// this widget is the switch. Left click opens the settings panel, right click
+// arms or disarms, middle click restarts.
 // Pipeline state comes from a small file the daemon writes, which keeps this
 // widget from having to talk to the process at all.
 BarWidget {
@@ -60,8 +62,10 @@ BarWidget {
   }
 
   function sendNote(body) {
-    if (!notify || !bar) return
-    bar.run("notify-send -a Jarvis " + bar.shellQuote("Voice assistant") + " " + bar.shellQuote(body))
+    if (!notify) return
+    // argv, not a shell string: Bar has no shellQuote(), and building one by
+    // hand is how a notification body ends up interpreted as shell.
+    Quickshell.execDetached(["notify-send", "-a", "Jarvis", "Voice assistant", body])
   }
 
   // ---- settings panel ------------------------------------------------
@@ -70,8 +74,12 @@ BarWidget {
   // disarm without duplicating any of it.
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
 
-  function openPanel()   { if (panelLoader.item) panelLoader.item.open() }
-  function closePanel()  { if (panelLoader.item) panelLoader.item.close() }
+  // Named open/close, not openPanel/closePanel: Bar.findPanelWidget only
+  // treats a widget as panel-bearing when it exposes open(), close() and
+  // `opened`. Miss one and hotkeys and `omarchy-shell shell toggle` silently
+  // skip the widget.
+  function open()        { if (panelLoader.item) panelLoader.item.open() }
+  function close()       { if (panelLoader.item) panelLoader.item.close() }
   function togglePanel() { if (panelLoader.item) panelLoader.item.toggle() }
 
   readonly property bool popoutSwitchClosing:
@@ -147,13 +155,14 @@ BarWidget {
   IpcHandler {
     target: "dorian.voice"
 
-    function toggle(): void { root.toggle() }
     function arm(): void { if (!root.armed) root.toggle() }
     function disarm(): void { if (root.armed) root.toggle() }
+    function toggleArmed(): void { root.toggle() }
     function restart(): void { root.restart() }
     function settings(): void { root.togglePanel() }
-    function open(): void { root.openPanel() }
-    function close(): void { root.closePanel() }
+    function toggle(): void { root.togglePanel() }
+    function open(): void { root.open() }
+    function close(): void { root.close() }
   }
 
   WidgetButton {

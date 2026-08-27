@@ -39,8 +39,15 @@ Panel {
   property real wakeThreshold: 0.5
   property real silenceTail: 1.2
   property real maxCommand: 15.0
+  property var voices: []
+  property string voice: ""
   property bool loaded: false
   property string errorText: ""
+
+  // A voice is ~63MB, so selecting one that is not on disk yet downloads it
+  // first. The dropdown locks while that runs.
+  property bool installingVoice: false
+  property string pendingVoice: ""
 
   // The daemon reads its config once at startup, so a change only takes
   // effect on restart. Restarting a disarmed listener would arm it, which is
@@ -68,6 +75,29 @@ Panel {
     if (!e) return ""
     if (!e.installed) return "not installed — replies will fail"
     return e.actions ? "can open apps and URLs" : "answer-only"
+  }
+
+  // config.toml stores a filename; the dropdown works in catalog ids.
+  readonly property string voiceId: root.voice.replace(/\.onnx$/, "")
+
+  function voiceEntry(id) {
+    for (var i = 0; i < voices.length; i++)
+      if (voices[i].id === id) return voices[i]
+    return null
+  }
+
+  function chooseVoice(id) {
+    if (id === root.voiceId || root.installingVoice) return
+    var entry = voiceEntry(id)
+    if (entry && entry.installed) {
+      root.apply("voice", entry.file)
+      return
+    }
+    root.errorText = ""
+    root.pendingVoice = id
+    root.installingVoice = true
+    installProc.command = [root.helper, "install-voice", id]
+    installProc.running = true
   }
 
   // One place for every write, so the restart bookkeeping cannot drift.
@@ -99,6 +129,8 @@ Panel {
           root.wakeWord = d.wake_word || ""
           root.agents = d.agents || []
           root.wakeWords = d.wake_words || []
+          root.voices = d.voices || []
+          root.voice = d.voice || ""
           if (d.listen) {
             root.wakeThreshold = d.listen.wake_threshold
             root.silenceTail = d.listen.silence_tail
@@ -129,6 +161,26 @@ Panel {
     onExited: function(code) {
       if (code === 0) root.onApplied()
       else { if (!root.errorText) root.errorText = "Could not save that setting."; root.load() }
+    }
+  }
+
+  Process {
+    id: installProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var msg = String(text || "").replace(/^\[jarvis\].*$/gm, "").trim()
+        if (msg) root.errorText = msg
+      }
+    }
+    onExited: function(code) {
+      root.installingVoice = false
+      if (code === 0) {
+        root.apply("voice", root.pendingVoice + ".onnx")
+      } else if (!root.errorText) {
+        root.errorText = "Could not download that voice."
+      }
+      root.pendingVoice = ""
     }
   }
 
@@ -328,6 +380,45 @@ Panel {
             return out
           }
           onChanged: function(v) { if (v !== root.wakeWord) root.apply("wake_word", v) }
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(4)
+
+          Dropdown {
+            width: parent.width
+            label: "Voice"
+            value: root.voiceId
+            enabled: root.loaded && !root.installingVoice
+            foreground: root.fg
+            accent: root.accent
+            fontFamily: root.fontFamily
+            options: {
+              var out = []
+              for (var i = 0; i < root.voices.length; i++) {
+                var v = root.voices[i]
+                out.push({
+                  value: v.id,
+                  label: v.id.replace(/^en_/, "").replace(/-medium$/, "").replace(/_/g, " ")
+                         + (v.installed ? "" : "  (download)")
+                })
+              }
+              return out
+            }
+            onChanged: function(v) { root.chooseVoice(v) }
+          }
+
+          Text {
+            text: root.installingVoice
+              ? "Downloading " + root.pendingVoice + "… about 63 MB."
+              : "Voices not listed here work too — put a path in the config file."
+            color: Qt.darker(root.fg, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            width: parent.width
+          }
         }
 
         PanelSeparator { foreground: root.fg }
