@@ -10,8 +10,9 @@ Which agent answers is configuration, not code -- see config.toml.example.
 Point it at Claude Code, Codex, a local ollama model, or anything else with a
 non-interactive CLI.
 
-Pipeline state is written to $XDG_RUNTIME_DIR/jarvis/state so the bar widget
-can show what it is doing without talking to this process.
+Pipeline state is written to $XDG_RUNTIME_DIR/jarvis/state (falling back to
+$XDG_STATE_HOME, never to a world-writable /tmp) so the bar widget can show
+what it is doing without talking to this process.
 """
 
 import argparse
@@ -85,8 +86,23 @@ ACTIONS_PROMPT = (
     "jarvis-open cannot do, just say so out loud."
 )
 
-runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-STATE_DIR = os.path.join(runtime, "jarvis")
+def _state_root():
+    """Where the pipeline-state file lives.
+
+    XDG_RUNTIME_DIR is per-user and mode 0700, so it is the right home. The
+    old fallback was tempfile.gettempdir() -- i.e. a predictable path inside a
+    world-writable /tmp, where another local user could pre-plant `state` as a
+    FIFO (blocking the bar widget's reader, which polls every second) or
+    `state.tmp` as a symlink (redirecting our write onto one of this user's
+    own files). Fall back to a directory only this user can write instead.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return runtime
+    return os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state")
+
+
+STATE_DIR = os.path.join(_state_root(), "jarvis")
 STATE_FILE = os.path.join(STATE_DIR, "state")
 
 _running = True
@@ -215,12 +231,22 @@ def resolve_wake_model(cfg):
 # Pipeline state, shared with the bar widget
 # --------------------------------------------------------------------------
 
+def open_nofollow(path):
+    """Open `path` for writing, refusing to follow a symlink.
+
+    O_NOFOLLOW makes the open fail outright if the final component is a
+    symlink, so a planted link cannot redirect the write somewhere else.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    return os.fdopen(os.open(path, flags, 0o600), "w")
+
+
 def set_state(state):
     """Publish pipeline state for the bar widget (idle/listening/thinking/speaking)."""
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
         tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w") as fh:
+        with open_nofollow(tmp) as fh:
             fh.write(state)
         os.replace(tmp, STATE_FILE)
     except OSError:
@@ -242,8 +268,8 @@ def open_mic():
     pw-record exits early if its stderr is subprocess.DEVNULL, so give it a
     real file to write to.
     """
-    os.makedirs(STATE_DIR, exist_ok=True)
-    err = open(os.path.join(STATE_DIR, "pw-record.log"), "w")
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    err = open_nofollow(os.path.join(STATE_DIR, "pw-record.log"))
     return subprocess.Popen(
         ["pw-record", "--rate=16000", "--channels=1", "--format=s16",
          "--latency=40ms", "-"],

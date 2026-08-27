@@ -118,9 +118,14 @@ BarWidget {
   // daemon's own pipeline marker.
   Process {
     id: stateProc
+    // Never read from /tmp: a predictable path in a world-writable directory
+    // lets another local user plant `state` as a FIFO, and this poll runs
+    // every second. Match the daemon's private fallback, bound the read, and
+    // cap how long it may block if the file is a pipe anyway.
     command: ["sh", "-c",
       "systemctl --user is-active " + root.unit +
-      " 2>/dev/null; cat \"${XDG_RUNTIME_DIR:-/tmp}/jarvis/state\" 2>/dev/null"]
+      " 2>/dev/null; timeout 2 head -c 64 " +
+      "\"${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/jarvis/state\" 2>/dev/null"]
     stdout: StdioCollector {
       id: stateOut
       waitForEnd: true
