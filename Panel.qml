@@ -617,8 +617,15 @@ Panel {
               accent: root.accent
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
+              // Not xdg-open: config.toml is text/plain, whose handler here
+              // is a terminal editor with Terminal=true, and execDetached
+              // gives it no terminal to run in. The result was an invisible
+              // nvim per click, piling up unreachable in the background.
+              // omarchy-launch-config-editor opens the user's chosen editor,
+              // wrapping a TUI one in a terminal, and toasts what it opened.
               onClicked: {
-                Quickshell.execDetached(["xdg-open", root.configPath])
+                Quickshell.execDetached(
+                  ["omarchy-launch-config-editor", root.configPath])
                 root.close()
               }
             }
