@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import urllib.parse
 import wave
 
 import numpy as np
@@ -739,7 +740,15 @@ def run_directive(directive):
     if proc.returncode != 0 or proc.overflowed:
         log(f"jarvis-open refused: {(proc.stderr or proc.stdout).strip()[:200]}")
         return False
-    log(f"jarvis-open: {proc.stdout.strip()[:200]}")
+    if kind == "url":
+        # A search URL carries the spoken question verbatim in its query
+        # string, and the journal must not learn the transcript through a
+        # side door. Audit the destination's origin, never the full URL.
+        origin = urllib.parse.urlsplit(value)
+        log(f"jarvis-open: opened {origin.scheme}://{origin.netloc} "
+            "(full url not journaled)")
+    else:
+        log(f"jarvis-open: {proc.stdout.strip()[:200]}")
     return True
 
 
