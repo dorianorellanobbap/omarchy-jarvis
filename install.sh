@@ -8,19 +8,32 @@ JARVIS_DIR="$HOME/.local/share/jarvis"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/dorian.voice"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/jarvis"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx"
 
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m    warning: %s\033[0m\n' "$*" >&2; }
 
+# put <mode> <src> <dest>: copy a file into place the way the daemon writes
+# files -- to an unpredictably named private temp file (mktemp, 0600) in the
+# destination directory, then an atomic rename over the target. Re-running
+# this script rewrites every one of these paths, and a plain `cp` onto an
+# existing name opens and follows whatever is there: a planted symlink would
+# have the write redirected through it. rename() replaces the name itself
+# and follows nothing.
+put() {
+  local mode=$1 src=$2 dest=$3 tmp
+  tmp=$(mktemp -p "$(dirname "$dest")" '.jarvis.XXXXXXXX') || exit 1
+  cp "$src" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$dest" \
+    || { rm -f "$tmp"; exit 1; }
+}
+
 # --- preflight -------------------------------------------------------------
 missing=()
-for cmd in python3 curl jq pw-record pw-play; do
+for cmd in python3 pw-record pw-play; do
   command -v "$cmd" >/dev/null || missing+=("$cmd")
 done
 if ((${#missing[@]})); then
   echo "missing required commands: ${missing[*]}" >&2
-  echo "on Omarchy: sudo pacman -S --needed python curl jq pipewire-audio" >&2
+  echo "on Omarchy: sudo pacman -S --needed python pipewire-audio" >&2
   exit 1
 fi
 
@@ -36,35 +49,39 @@ command -v voxtype >/dev/null || warn "'voxtype' not on PATH -- Jarvis needs it 
 if [[ $SRC != "$PLUGIN_DIR" ]]; then
   say "Installing the bar widget"
   mkdir -p "$PLUGIN_DIR"
-  cp "$SRC/manifest.json" "$SRC/BarWidget.qml" "$SRC/Panel.qml" "$PLUGIN_DIR/"
+  put 644 "$SRC/manifest.json" "$PLUGIN_DIR/manifest.json"
+  put 644 "$SRC/BarWidget.qml" "$PLUGIN_DIR/BarWidget.qml"
+  put 644 "$SRC/Panel.qml"     "$PLUGIN_DIR/Panel.qml"
   echo "  -> $PLUGIN_DIR"
 fi
 
 # --- daemon ----------------------------------------------------------------
 say "Installing the daemon"
 mkdir -p "$JARVIS_DIR/bin" "$JARVIS_DIR/voices"
-cp "$SRC/daemon/jarvis-listen.py" "$JARVIS_DIR/"
-cp "$SRC/daemon/jarvis-open"      "$JARVIS_DIR/bin/"
-cp "$SRC/daemon/jarvis-config"    "$JARVIS_DIR/"
+put 755 "$SRC/daemon/jarvis-listen.py" "$JARVIS_DIR/jarvis-listen.py"
+put 755 "$SRC/daemon/jarvis-open"      "$JARVIS_DIR/bin/jarvis-open"
+put 755 "$SRC/daemon/jarvis-config"    "$JARVIS_DIR/jarvis-config"
 # The safe-file helpers are imported by all three, and each imports it from
 # its own directory, so it lands in both.
-cp "$SRC/daemon/safefile.py"      "$JARVIS_DIR/"
-cp "$SRC/daemon/safefile.py"      "$JARVIS_DIR/bin/"
+put 644 "$SRC/daemon/safefile.py"      "$JARVIS_DIR/safefile.py"
+put 644 "$SRC/daemon/safefile.py"      "$JARVIS_DIR/bin/safefile.py"
 # Checksums for every voice the settings panel can download. Without it,
 # jarvis-config refuses to install a voice rather than installing an
 # unverified one.
-cp "$SRC/daemon/voices.sha256"    "$JARVIS_DIR/"
-cp "$SRC/daemon/en_US-amy-medium.onnx.json" "$JARVIS_DIR/voices/"
-chmod +x "$JARVIS_DIR/bin/jarvis-open" "$JARVIS_DIR/jarvis-listen.py" "$JARVIS_DIR/jarvis-config"
+put 644 "$SRC/daemon/voices.sha256"    "$JARVIS_DIR/voices.sha256"
+put 644 "$SRC/daemon/en_US-amy-medium.onnx.json" "$JARVIS_DIR/voices/en_US-amy-medium.onnx.json"
 
 # The settings panel shells out to jarvis-config, which needs the venv's
 # interpreter. Wrap it so neither the panel nor a person has to know that.
-cat > "$JARVIS_DIR/bin/jarvis-config" <<'WRAPPER'
+# Same private-temp-then-rename discipline as put().
+wrapper_tmp=$(mktemp -p "$JARVIS_DIR/bin" '.jarvis.XXXXXXXX')
+cat > "$wrapper_tmp" <<'WRAPPER'
 #!/usr/bin/env bash
 JARVIS_DIR="${JARVIS_DIR:-$HOME/.local/share/jarvis}"
 exec "$JARVIS_DIR/venv/bin/python" "$JARVIS_DIR/jarvis-config" "$@"
 WRAPPER
-chmod +x "$JARVIS_DIR/bin/jarvis-config"
+chmod 755 "$wrapper_tmp"
+mv -f "$wrapper_tmp" "$JARVIS_DIR/bin/jarvis-config"
 
 # --- python venv -----------------------------------------------------------
 say "Building the venv (onnxruntime + scipy, this takes a minute)"
@@ -95,7 +112,14 @@ WAKEWORDS
 # --- piper voice (63MB, not in the repo) -----------------------------------
 say "Fetching the piper voice"
 VOICE="$JARVIS_DIR/voices/en_US-amy-medium.onnx"
-[[ -f $VOICE ]] || curl -fL --progress-bar -o "$VOICE" "$VOICE_URL"
+# jarvis-config install-voice is the same hardened path the settings panel
+# uses: the transfer goes to an unpredictably named private temp file with a
+# byte ceiling, is verified against the committed sha256 lock, and only then
+# renamed onto the final pathname. curl straight onto that predictable name
+# would follow a planted symlink and write unbounded, unverified bytes
+# through it before any checksum ran. Skips files already present.
+"$JARVIS_DIR/bin/jarvis-config" install-voice en_US-amy-medium
+# Independent recheck of whatever is on disk, downloaded now or before.
 ( cd "$JARVIS_DIR/voices" && sha256sum -c "$SRC/daemon/voice-model.sha256" >/dev/null ) \
   || { echo "voice checksum mismatch -- delete $VOICE and re-run" >&2; exit 1; }
 echo "  -> $VOICE"
@@ -106,15 +130,15 @@ mkdir -p "$CONFIG_DIR"
 if [[ -f $CONFIG_DIR/config.toml ]]; then
   echo "  -> keeping your existing $CONFIG_DIR/config.toml"
 else
-  cp "$SRC/config/config.toml.example" "$CONFIG_DIR/config.toml"
+  put 644 "$SRC/config/config.toml.example" "$CONFIG_DIR/config.toml"
   echo "  -> wrote $CONFIG_DIR/config.toml (defaults to the claude agent)"
 fi
-cp "$SRC/config/config.toml.example" "$CONFIG_DIR/config.toml.example"
+put 644 "$SRC/config/config.toml.example" "$CONFIG_DIR/config.toml.example"
 
 # --- systemd user unit -----------------------------------------------------
 say "Installing the systemd user unit"
 mkdir -p "$UNIT_DIR"
-cp "$SRC/daemon/jarvis.service" "$UNIT_DIR/"
+put 644 "$SRC/daemon/jarvis.service" "$UNIT_DIR/jarvis.service"
 systemctl --user daemon-reload
 # Deliberately not `enable`d. Enabling would start the listener at every
 # login, which for an always-on microphone is not a default anyone should

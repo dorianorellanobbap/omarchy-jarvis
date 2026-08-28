@@ -77,7 +77,7 @@ The unit is installed but **not enabled**: nothing holds the mic open until you
 arm it from the widget. If you want it armed from login, that is an explicit
 `systemctl --user enable jarvis`.
 
-**Requires:** Python 3.11+, `curl`, `jq`, PipeWire (`pw-record`/`pw-play`),
+**Requires:** Python 3.11+, PipeWire (`pw-record`/`pw-play`),
 `voxtype` (ships with Omarchy), and the CLI of whichever agent you pick.
 
 ## Use
