@@ -40,6 +40,15 @@ anywhere in that path, and with `actions = false` directives are stripped and
 ignored. Turn it on if you want a voice assistant that acts. Leave it off and
 the agent can only talk.
 
+A panic switch is one keybinding away in `~/.config/hypr/bindings.conf`:
+
+```ini
+bind = SUPER SHIFT, J, exec, systemctl --user stop jarvis
+```
+
+That disarms the microphone and kills any exchange in flight, mid-word. The
+bar widget's right-click disarm does the same thing with a mouse.
+
 Two more things worth knowing:
 
 - What you say is handed to the agent CLI on **stdin**, never on its command
