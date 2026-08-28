@@ -71,17 +71,20 @@ DEFAULTS = {
     "agents": {
         "claude": {
             # No {prompt} in argv: the transcript is fed to `claude -p` on
-            # stdin, where it is not readable out of the process list.
+            # stdin, where it is not readable out of the process list. And no
+            # tool flags: the agent CLI is invoked answer-only in *both*
+            # modes. With actions = true the daemon parses a strictly
+            # validated <<jarvis:open-...>> directive out of the reply text
+            # and execs the jarvis-open broker itself, so there is never a
+            # tool grant for a spoken or injected request to aim at.
             "command": ["claude", "-p",
-                        "--append-system-prompt", "{system}",
-                        "--allowedTools", "Bash(jarvis-open:*)"],
-            # Answer-only unless the config says otherwise. Letting a sentence
-            # spoken near the mic reach a tool-enabled agent is a decision the
-            # person installing this should make on purpose, not one they
-            # inherit from a default. It also means these DEFAULTS stay safe
-            # as a fallback: an unreadable config drops back to here, and
-            # dropping back should never quietly grant more than was granted
-            # before.
+                        "--append-system-prompt", "{system}"],
+            # Off unless the config says otherwise. Letting a sentence spoken
+            # near the mic open apps and URLs is a decision the person
+            # installing this should make on purpose, not one they inherit
+            # from a default. It also means these DEFAULTS stay safe as a
+            # fallback: an unreadable config drops back to here, and dropping
+            # back should never quietly grant more than was granted before.
             "actions": False,
         },
     },
@@ -94,15 +97,18 @@ STYLE_PROMPT = (
     "plain spoken English. No markdown, no lists, no code blocks, no URLs."
 )
 
-# The actions half. Only sent to agents configured with actions = true.
+# The actions half. Only sent to agents configured with actions = true. The
+# agent is never given a tool or a shell: it asks for an action by ending its
+# reply with one directive line, and the daemon decides whether anything
+# happens. See extract_directive/run_directive below.
 ACTIONS_PROMPT = (
-    "You can act on the machine, not just answer. To open an installed app "
-    "run `jarvis-open app <name>` (e.g. jarvis-open app chromium). To open a "
-    "web page in the browser run `jarvis-open url <https url>`. "
-    "`jarvis-open list` prints every installed app name. That command is "
-    "pre-approved, so run it directly and never ask for permission or say "
-    "you are waiting on approval. If something else is asked of you that "
-    "jarvis-open cannot do, just say so out loud."
+    "You cannot run commands, but you can ask Jarvis to open things. To open "
+    "an installed app, add a line at the end of your reply of exactly this "
+    "form: <<jarvis:open-app NAME>>. To open a web page in the browser: "
+    "<<jarvis:open-url URL>> (http or https only). At most one such line per "
+    "reply. The line is stripped before your reply is spoken, so also say in "
+    "your reply what you are opening. If asked to do anything else to the "
+    "machine, say out loud that you cannot."
 )
 
 def _state_root():
@@ -178,7 +184,7 @@ class Agent:
     def executable(self):
         return self.command[0]
 
-    def build_invocation(self, prompt, outfile):
+    def build_invocation(self, prompt, outfile, system_extra=""):
         """(argv, stdin_payload) for one question.
 
         The transcript only lands in argv if the command template asks for it
@@ -187,9 +193,12 @@ class Agent:
         a template that names neither {prompt} nor {system} gets both there,
         system prompt first, for CLIs with no system-prompt flag.
         """
+        system = self.system_prompt
+        if system_extra:
+            system += "\n\n" + system_extra
         fields = {
             "{prompt}": prompt,
-            "{system}": self.system_prompt,
+            "{system}": system,
             "{outfile}": outfile or "",
         }
         used = set()
@@ -204,7 +213,7 @@ class Agent:
             return argv, None
         if "{system}" in used:
             return argv, prompt
-        return argv, self.system_prompt + "\n\n" + prompt
+        return argv, system + "\n\n" + prompt
 
 
 def load_config(path=CONFIG_PATH):
@@ -242,6 +251,14 @@ def select_agent(cfg):
         log(f"warning: agent '{agent.name}' puts the transcript in argv, where "
             "every local process can read it; drop {prompt} from `command` to "
             "send it on stdin instead")
+    # Actions are brokered by this daemon, never by a tool grant to the CLI.
+    # A command that hands the agent tools anyway isn't something we can
+    # police -- it's the user's argv -- but it deserves a loud note.
+    if any("--allowedTools" in part or "--dangerously" in part
+           for part in agent.command):
+        log(f"warning: agent '{agent.name}' grants the CLI tools in `command`. "
+            "Jarvis never needs that: actions go through the jarvis-open "
+            "broker. Remove the tool flags unless you accept the risk.")
     log(f"agent: {agent.name} ({'can act' if agent.actions else 'answer-only'})")
     return agent
 
@@ -519,7 +536,13 @@ def ask_agent(agent, prompt):
         fd, outfile = tempfile.mkstemp(suffix=".txt", prefix="jarvis-reply-")
         os.close(fd)
 
-    argv, stdin_payload = agent.build_invocation(prompt, outfile)
+    system_extra = ""
+    if agent.actions:
+        apps = installed_apps()
+        if apps:
+            system_extra = "Installed apps: " + ", ".join(apps) + "."
+
+    argv, stdin_payload = agent.build_invocation(prompt, outfile, system_extra)
 
     try:
         try:
@@ -571,6 +594,113 @@ def clean_reply(text, strip_prefixes):
     return "\n".join(lines).strip()
 
 
+# --------------------------------------------------------------------------
+# Actions: a structured directive, brokered outside the agent
+#
+# The agent CLI never gets a shell or a tool grant. When actions are on, the
+# agent asks for an action by ending its reply with one directive line; the
+# daemon parses it against a strict pattern, validates the argument again
+# here, and execs the jarvis-open broker directly -- one argv, no shell --
+# which validates it a third time and can launch an installed .desktop entry
+# or open an http(s) URL, nothing else. A prompt-level instruction plus a
+# shell allowlist is not an authorization boundary; this is enforced where
+# the agent cannot reach it.
+# --------------------------------------------------------------------------
+
+DIRECTIVE_RE = re.compile(
+    r"^\s*<<jarvis:open-(app|url)\s+([^<>\n]{1,2048}?)\s*>>\s*$")
+# What we will pass the broker as an app query: printable, no leading dash,
+# short. The broker only fuzzy-matches it against installed .desktop names.
+APP_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")
+# Same shape jarvis-open itself enforces before handing a URL to xdg-open.
+URL_RE = re.compile(r"^https?://[^\s\"'\\<>]+$")
+
+
+def jarvis_open_path():
+    """The broker binary: installed under ~/.local/share/jarvis/bin, or next
+    to this file when running from a checkout."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (os.path.join(JARVIS_BIN, "jarvis-open"),
+                      os.path.join(here, "jarvis-open")):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def installed_apps():
+    """App names for the actions system prompt, from the broker's `list`.
+
+    The agent has no way to run `jarvis-open list` itself any more, so tell
+    it what is installed up front. Bounded like every other child, and capped
+    well below any prompt-size trouble.
+    """
+    broker = jarvis_open_path()
+    if broker is None:
+        return []
+    try:
+        proc = run_bounded([broker, "list"], timeout=10,
+                           stdout_limit=256 << 10, stderr_limit=16 << 10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0 or proc.overflowed:
+        return []
+    names, total = [], 0
+    for line in proc.stdout.splitlines():
+        name = line.strip()
+        if not name:
+            continue
+        total += len(name) + 2
+        if total > 4000:
+            break
+        names.append(name)
+    return names
+
+
+def extract_directive(reply):
+    """Split a reply into (spoken_text, directive-or-None).
+
+    Directive lines are stripped from the spoken text whether or not actions
+    are enabled -- an ignored directive should not be read aloud either --
+    and only the first one counts.
+    """
+    directive = None
+    kept = []
+    for line in reply.splitlines():
+        match = DIRECTIVE_RE.match(line)
+        if match:
+            if directive is None:
+                directive = (match.group(1), match.group(2).strip())
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip(), directive
+
+
+def run_directive(directive):
+    """Validate one directive and exec the broker for it. True on success."""
+    kind, value = directive
+    if kind == "app" and not APP_QUERY_RE.match(value):
+        log("directive refused: app name failed validation")
+        return False
+    if kind == "url" and not URL_RE.match(value):
+        log("directive refused: not a plain http(s) url")
+        return False
+    broker = jarvis_open_path()
+    if broker is None:
+        log("directive refused: jarvis-open broker not found")
+        return False
+    try:
+        proc = run_bounded([broker, kind, value], timeout=15,
+                           stdout_limit=64 << 10, stderr_limit=16 << 10)
+    except (OSError, subprocess.TimeoutExpired):
+        log("jarvis-open did not run")
+        return False
+    if proc.returncode != 0 or proc.overflowed:
+        log(f"jarvis-open refused: {(proc.stderr or proc.stdout).strip()[:200]}")
+        return False
+    log(f"jarvis-open: {proc.stdout.strip()[:200]}")
+    return True
+
+
 def speak(text, voice):
     # Belt-and-braces: respond() caps the reply too, but nothing longer than
     # this ever reaches the synthesiser regardless of the path in.
@@ -609,7 +739,17 @@ def respond(agent, voice, text, log_text=False):
     """
     log(f"heard: {text}" if log_text else f"heard {len(text)} characters")
     answer = ask_agent(agent, text) or "Sorry, I could not get an answer."
+    answer, directive = extract_directive(answer)
     answer = answer[:MAX_SPOKEN_CHARS]
+    if directive:
+        if agent.actions:
+            ok = run_directive(directive)
+            if not answer:
+                answer = "Opening it now." if ok else ""
+            if not ok:
+                answer = (answer + " Sorry, that did not open.").strip()
+        else:
+            log("agent sent an open directive but actions are off; ignored")
     log(f"reply: {answer[:120]}" if log_text else f"reply: {len(answer)} characters")
     set_state("speaking")
     speak(answer, voice)

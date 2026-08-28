@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""The only shell command the voice assistant is allowed to run.
+"""The narrow broker behind the voice assistant's actions.
 
-`claude -p` starts with no tools enabled, so the daemon passes
---allowedTools 'Bash(jarvis-open:*)'. That makes this script the entire blast
-radius: it can launch an installed desktop app or open an http(s) URL, and
-nothing else.
+The agent CLI is never granted a shell or a tool. When actions are enabled,
+the daemon parses one strictly validated <<jarvis:open-...>> directive out of
+the agent's reply text and execs this script directly -- a single argv, no
+shell anywhere in the path. That makes this script the entire blast radius:
+it can launch an installed desktop app or open an http(s) URL, and nothing
+else, and it re-validates its arguments itself rather than trusting the
+caller's.
 
     jarvis-open list            every launchable app name
     jarvis-open app <name>      launch one

@@ -40,15 +40,18 @@ cooldown       = 1.0   # ignore the wake word this long after replying
 #              local process. A command naming neither {prompt} nor {system}
 #              gets both on stdin, system prompt first.
 #
-# `actions = true` lets the agent launch apps and open URLs through the
-# `jarvis-open` wrapper. It only works if the CLI can be told to permit
-# exactly one command. Left false, the agent can only answer out loud.
+# `actions = true` lets the agent open apps and web pages. The agent CLI is
+# never granted a shell or a tool either way: to act, it ends its reply with
+# a <<jarvis:open-app NAME>> or <<jarvis:open-url URL>> line, which the
+# daemon validates against a strict pattern and hands to the `jarvis-open`
+# broker as a single argv exec. That broker can launch an installed .desktop
+# entry or open an http(s) URL, and nothing else. Left false, directives are
+# ignored and the agent can only answer out loud. Because the action path is
+# reply parsing rather than a CLI tool grant, it works with any agent CLI.
 #
 # It ships false. Turning it on means a sentence spoken near the microphone
-# reaches an agent that has a tool enabled, and what keeps that agent to
-# `jarvis-open` alone is the agent CLI's own allowlist enforcement, not
-# anything Jarvis can enforce itself. That is a fine trade to make on
-# purpose. It is not one to inherit from a default.
+# can open an app or a web page on your screen. That is a fine trade to make
+# on purpose. It is not one to inherit from a default.
 #
 # Both presets below are tested. Adding another CLI is just another section --
 # run `jarvis-listen --agents` to see what's configured and installed, and
@@ -58,12 +61,11 @@ cooldown       = 1.0   # ignore the wake word this long after replying
 
 [agents.claude]
 # Claude Code. `claude -p` with no prompt argument reads the prompt from
-# stdin. Starts with every tool disabled, so --allowedTools grants exactly
-# one command and nothing else.
+# stdin, and no tool flags are passed: the CLI runs answer-only in both
+# modes, with actions brokered by the daemon as described above.
 command = [
   "claude", "-p",
   "--append-system-prompt", "{system}",
-  "--allowedTools", "Bash(jarvis-open:*)",
 ]
 # Set true to let Jarvis open apps and web pages. Read the note above first.
 actions = false

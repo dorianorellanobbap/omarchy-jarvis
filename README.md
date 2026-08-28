@@ -29,13 +29,16 @@ should be comfortable with that trade before installing. Omarchy plugins run
 unsandboxed with your user's permissions.
 
 **Actions are off by default.** Set `actions = true` and the agent can also
-**launch apps and open URLs**. That goes through `jarvis-open`, a wrapper that
-can start an installed `.desktop` entry or open an `http(s)` URL and nothing
-else. Worth being precise about what holds that line: `jarvis-open` is the
-only command the agent is granted, and what keeps it to that one command is
-the agent CLI's own allowlist (`--allowedTools 'Bash(jarvis-open:*)'` for
-Claude Code), not anything Jarvis enforces itself. Turn it on if you want a
-voice assistant that acts. Leave it off and the agent can only talk.
+**launch apps and open URLs**. Worth being precise about what holds that
+line: the agent CLI is never granted a shell or a tool, in either mode. To
+act, it ends its reply with a structured `<<jarvis:open-app …>>` or
+`<<jarvis:open-url …>>` line; the daemon parses that against a strict
+pattern, validates the argument, and directly execs `jarvis-open` -- a broker
+that can start an installed `.desktop` entry or open an `http(s)` URL and
+nothing else, and that re-validates its arguments itself. No shell sits
+anywhere in that path, and with `actions = false` directives are stripped and
+ignored. Turn it on if you want a voice assistant that acts. Leave it off and
+the agent can only talk.
 
 Two more things worth knowing:
 
@@ -141,9 +144,10 @@ Use `{outfile}` when the CLI prints progress logs to stdout, or
 `strip_prefixes = ["INFO", "Loading"]` to drop noise lines. Then check it with
 `--agents` and `--ask`. **PRs adding a working preset are welcome.**
 
-`actions = true` only makes sense if the CLI can be told to permit exactly one
-command. Claude Code can (`--allowedTools`); Codex's sandbox modes are
-all-or-nothing, so its preset is answer-only.
+`actions = true` works with any CLI: acting is reply parsing, not a tool
+grant. The agent asks by ending its reply with a `<<jarvis:open-… >>`
+directive line, and the daemon brokers it through `jarvis-open`. The CLI
+needs no tool support at all, and none of the presets pass any tool flags.
 
 ## How it works
 
