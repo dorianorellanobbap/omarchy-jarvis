@@ -738,18 +738,24 @@ def respond(agent, voice, text, log_text=False):
     it was, because spoken content can carry secrets and journald persists.
     """
     log(f"heard: {text}" if log_text else f"heard {len(text)} characters")
-    answer = ask_agent(agent, text) or "Sorry, I could not get an answer."
-    answer, directive = extract_directive(answer)
+    answer, directive = extract_directive(ask_agent(agent, text))
     answer = answer[:MAX_SPOKEN_CHARS]
     if directive:
         if agent.actions:
             ok = run_directive(directive)
-            if not answer:
-                answer = "Opening it now." if ok else ""
-            if not ok:
+            if ok and not answer:
+                answer = "Opening it now."
+            elif not ok:
                 answer = (answer + " Sorry, that did not open.").strip()
         else:
             log("agent sent an open directive but actions are off; ignored")
+            if not answer:
+                answer = "Sorry, opening things is turned off."
+    # The generic fallback comes last, after directive handling: a reply that
+    # was nothing but a directive line strips to empty, and silence is the
+    # one answer a voice assistant must never give.
+    if not answer:
+        answer = "Sorry, I could not get an answer."
     log(f"reply: {answer[:120]}" if log_text else f"reply: {len(answer)} characters")
     set_state("speaking")
     speak(answer, voice)
