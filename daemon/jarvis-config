@@ -56,9 +56,9 @@ WRITABLE = {
 # turns the rest of the value into further TOML -- which does not become an
 # injected [agents.*] section (the value's opening quote is never closed, so
 # the file stops parsing), but it does silently corrupt the config. The
-# daemon then falls back to DEFAULTS, and DEFAULTS ships `actions = true`:
-# someone who had deliberately set `actions = false` would come back armed.
-# Fail on the write instead of failing open on the next restart.
+# daemon then falls back to DEFAULTS on its next restart, quietly dropping
+# every agent, key and setting the user had configured. Fail on the write
+# instead of failing silently later.
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 

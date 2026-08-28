@@ -167,8 +167,25 @@ class Agent:
         self.name = name
         self.command = command
         self.actions = bool(spec.get("actions", False))
-        self.strip_prefixes = tuple(spec.get("strip_prefixes", []))
-        self.timeout = float(spec.get("timeout", 180))
+
+        # A TOML string here would iterate as characters, and an empty prefix
+        # matches every line -- either way clean_reply would quietly eat the
+        # whole reply. A non-string would TypeError mid-exchange instead of
+        # at startup. Refuse all of it here, loudly.
+        prefixes = spec.get("strip_prefixes", [])
+        if isinstance(prefixes, str) or not isinstance(prefixes, list) \
+                or not all(isinstance(p, str) and p for p in prefixes):
+            raise ValueError(f"agent '{name}': 'strip_prefixes' must be an "
+                             "array of non-empty strings")
+        self.strip_prefixes = tuple(prefixes)
+
+        try:
+            self.timeout = float(spec.get("timeout", 180))
+        except (TypeError, ValueError):
+            raise ValueError(f"agent '{name}': 'timeout' must be a number")
+        if not 0 < self.timeout <= 3600:
+            raise ValueError(f"agent '{name}': 'timeout' must be between "
+                             "0 and 3600 seconds")
         # A {outfile} anywhere in argv means the reply is written to a file
         # rather than printed -- the escape hatch for CLIs whose stdout is a
         # progress log.
@@ -244,7 +261,11 @@ def select_agent(cfg):
     if name not in specs:
         known = ", ".join(sorted(specs)) or "none"
         raise SystemExit(f"[jarvis] unknown agent '{name}'. Configured: {known}")
-    agent = Agent(name, specs[name])
+    try:
+        agent = Agent(name, specs[name])
+    except ValueError as exc:
+        # A clean message, not a traceback, for systemd's restart loop to log.
+        raise SystemExit(f"[jarvis] {exc}")
     if shutil.which(agent.executable) is None:
         log(f"warning: '{agent.executable}' is not on PATH -- replies will fail")
     if any("{prompt}" in part for part in agent.command):
@@ -360,13 +381,20 @@ def tone(freq, ms=120):
 
 
 def chime(kind):
-    """Short feedback tone so you know it heard you, without a notification."""
+    """Short feedback tone so you know it heard you, without a notification.
+
+    The timeout matters more than the tone: pw-play blocking on a wedged
+    audio server would otherwise hang the listener, not just skip a beep.
+    """
     freq = 880 if kind == "start" else 440
-    subprocess.run(
-        ["pw-play", "--rate=16000", "--channels=1", "--format=s16", "-"],
-        input=tone(freq), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    try:
+        subprocess.run(
+            ["pw-play", "--rate=16000", "--channels=1", "--format=s16", "-"],
+            input=tone(freq), stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=False, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        log("chime timed out; is the audio server healthy?")
 
 
 def capture_command(mic, ambient, listen):
@@ -734,9 +762,16 @@ def speak(text, voice):
             log("speech synthesis timed out")
             return
         # A piper failure still leaves a bare 44-byte wav header behind.
+        # The capped reply synthesises to at most a couple of minutes of
+        # audio, so a playback still running at five is a wedged audio
+        # server holding the listener hostage, not a long answer.
         if os.path.getsize(out) > 44:
-            subprocess.run(["pw-play", out], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, check=False)
+            try:
+                subprocess.run(["pw-play", out], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=False,
+                               timeout=300)
+            except subprocess.TimeoutExpired:
+                log("playback timed out; is the audio server healthy?")
     finally:
         try:
             os.unlink(out)
