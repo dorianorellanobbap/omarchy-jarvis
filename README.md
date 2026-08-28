@@ -39,6 +39,10 @@ voice assistant that acts. Leave it off and the agent can only talk.
 
 Two more things worth knowing:
 
+- What you say is handed to the agent CLI on **stdin**, never on its command
+  line (argv is readable by every process on the machine), and the journal
+  records how long each exchange was, not what was said -- unless you opt in
+  with `log_transcripts = true`.
 - Anything running as your user can arm the listener over Quickshell's IPC
   (`qs ipc call dorian.voice arm`), the same way the widget does. A
   notification fires when it does, unless you turn notifications off.
@@ -123,9 +127,9 @@ as shell. Three placeholders are substituted into individual arguments:
 
 | Placeholder | Becomes |
 | --- | --- |
-| `{prompt}` | what you said, transcribed |
 | `{system}` | the voice-style system prompt Jarvis builds |
 | `{outfile}` | a temp file. If present, the reply is read from there instead of stdout |
+| `{prompt}` | what you said, transcribed. **Leave it out** (both presets do) and the transcript is fed to the CLI on stdin instead, keeping it out of the process list. Name neither `{prompt}` nor `{system}` and stdin gets both, system prompt first |
 
 ```toml
 [agents.mycli]

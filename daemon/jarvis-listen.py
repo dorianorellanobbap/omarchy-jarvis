@@ -57,6 +57,10 @@ DEFAULTS = {
     "agent": "claude",
     "wake_word": "hey_jarvis",
     "voice": "en_US-amy-medium.onnx",
+    # What you say near an open microphone can carry secrets, and journald
+    # persists what we print. Off means the journal records sizes and
+    # outcomes, never the words.
+    "log_transcripts": False,
     "listen": {
         "wake_threshold": 0.5,
         "silence_tail": 1.2,
@@ -66,7 +70,9 @@ DEFAULTS = {
     },
     "agents": {
         "claude": {
-            "command": ["claude", "-p", "{prompt}",
+            # No {prompt} in argv: the transcript is fed to `claude -p` on
+            # stdin, where it is not readable out of the process list.
+            "command": ["claude", "-p",
                         "--append-system-prompt", "{system}",
                         "--allowedTools", "Bash(jarvis-open:*)"],
             # Answer-only unless the config says otherwise. Letting a sentence
@@ -172,18 +178,33 @@ class Agent:
     def executable(self):
         return self.command[0]
 
-    def build_argv(self, prompt, outfile):
+    def build_invocation(self, prompt, outfile):
+        """(argv, stdin_payload) for one question.
+
+        The transcript only lands in argv if the command template asks for it
+        with {prompt} -- argv is readable by every process on the machine, so
+        the presets don't. Without {prompt}, the transcript is fed on stdin;
+        a template that names neither {prompt} nor {system} gets both there,
+        system prompt first, for CLIs with no system-prompt flag.
+        """
         fields = {
             "{prompt}": prompt,
             "{system}": self.system_prompt,
             "{outfile}": outfile or "",
         }
+        used = set()
         argv = []
         for part in self.command:
             for token, value in fields.items():
-                part = part.replace(token, value)
+                if token in part:
+                    used.add(token)
+                    part = part.replace(token, value)
             argv.append(part)
-        return argv
+        if "{prompt}" in used:
+            return argv, None
+        if "{system}" in used:
+            return argv, prompt
+        return argv, self.system_prompt + "\n\n" + prompt
 
 
 def load_config(path=CONFIG_PATH):
@@ -217,6 +238,10 @@ def select_agent(cfg):
     agent = Agent(name, specs[name])
     if shutil.which(agent.executable) is None:
         log(f"warning: '{agent.executable}' is not on PATH -- replies will fail")
+    if any("{prompt}" in part for part in agent.command):
+        log(f"warning: agent '{agent.name}' puts the transcript in argv, where "
+            "every local process can read it; drop {prompt} from `command` to "
+            "send it on stdin instead")
     log(f"agent: {agent.name} ({'can act' if agent.actions else 'answer-only'})")
     return agent
 
@@ -494,11 +519,12 @@ def ask_agent(agent, prompt):
         fd, outfile = tempfile.mkstemp(suffix=".txt", prefix="jarvis-reply-")
         os.close(fd)
 
-    argv = agent.build_argv(prompt, outfile)
+    argv, stdin_payload = agent.build_invocation(prompt, outfile)
 
     try:
         try:
-            proc = run_bounded(argv, timeout=agent.timeout, cwd=HOME)
+            proc = run_bounded(argv, timeout=agent.timeout,
+                               input_text=stdin_payload, cwd=HOME)
         except FileNotFoundError:
             log(f"agent '{agent.name}': '{agent.executable}' not found on PATH")
             return ""
@@ -574,18 +600,23 @@ def speak(text, voice):
             pass
 
 
-def respond(agent, voice, text):
-    """Shared tail of the pipeline: ask, then say the answer out loud."""
-    log(f"heard: {text}")
+def respond(agent, voice, text, log_text=False):
+    """Shared tail of the pipeline: ask, then say the answer out loud.
+
+    The words themselves only reach the journal when log_transcripts opted
+    in; by default the journal records that an exchange happened and how big
+    it was, because spoken content can carry secrets and journald persists.
+    """
+    log(f"heard: {text}" if log_text else f"heard {len(text)} characters")
     answer = ask_agent(agent, text) or "Sorry, I could not get an answer."
     answer = answer[:MAX_SPOKEN_CHARS]
-    log(f"reply: {answer[:120]}")
+    log(f"reply: {answer[:120]}" if log_text else f"reply: {len(answer)} characters")
     set_state("speaking")
     speak(answer, voice)
     return answer
 
 
-def handle_command(mic, ambient, agent, voice, listen):
+def handle_command(mic, ambient, agent, voice, listen, log_text=False):
     chime("start")
     set_state("listening")
     samples = capture_command(mic, ambient, listen)
@@ -616,14 +647,14 @@ def handle_command(mic, ambient, agent, voice, listen):
     if not text:
         log("empty transcription")
         return
-    respond(agent, voice, text)
+    respond(agent, voice, text, log_text)
 
 
 # --------------------------------------------------------------------------
 # Entry points
 # --------------------------------------------------------------------------
 
-def listen_forever(agent, voice, wake_path, wake_key, listen):
+def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
     from openwakeword.model import Model
 
     model = Model(wakeword_model_paths=[wake_path])
@@ -656,7 +687,7 @@ def listen_forever(agent, voice, wake_path, wake_key, listen):
 
             if score > listen["wake_threshold"] and time.time() - last_fire > listen["cooldown"]:
                 log(f"wake word detected ({score:.2f})")
-                handle_command(mic, ambient, agent, voice, listen)
+                handle_command(mic, ambient, agent, voice, listen, log_text)
                 # Nothing drained the mic while we were thinking and speaking,
                 # so the pipe holds seconds of stale audio (including our own
                 # reply). Start a fresh stream rather than replay it.
@@ -705,6 +736,7 @@ def main():
     agent = select_agent(cfg)
     voice = resolve_voice(cfg)
     wake_path, wake_key = resolve_wake_model(cfg)
+    log_text = bool(cfg.get("log_transcripts", False))
 
     if args.check:
         ok = True
@@ -719,12 +751,12 @@ def main():
         return 0 if ok else 1
 
     if args.ask:
-        respond(agent, voice, args.ask)
+        respond(agent, voice, args.ask, log_text)
         return 0
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    listen_forever(agent, voice, wake_path, wake_key, listen)
+    listen_forever(agent, voice, wake_path, wake_key, listen, log_text)
     return 0
 
 
