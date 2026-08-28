@@ -627,13 +627,25 @@ def jarvis_open_path():
     return None
 
 
+# The list behind the actions prompt costs a broker spawn plus a full
+# .desktop scan. Fine once, needless on every question of a conversation --
+# but the daemon runs for days, so a process-lifetime cache would hide a
+# newly installed app until restart. A short TTL gets both, and failures are
+# not cached, so a transient broker problem is retried on the next exchange.
+_APPS_TTL_SECONDS = 60.0
+_apps_cache = {"at": 0.0, "names": []}
+
+
 def installed_apps():
     """App names for the actions system prompt, from the broker's `list`.
 
     The agent has no way to run `jarvis-open list` itself any more, so tell
-    it what is installed up front. Bounded like every other child, and capped
-    well below any prompt-size trouble.
+    it what is installed up front. Bounded like every other child, capped
+    well below any prompt-size trouble, and cached briefly (see above).
     """
+    now = time.monotonic()
+    if _apps_cache["names"] and now - _apps_cache["at"] < _APPS_TTL_SECONDS:
+        return _apps_cache["names"]
     broker = jarvis_open_path()
     if broker is None:
         return []
@@ -653,6 +665,8 @@ def installed_apps():
         if total > 4000:
             break
         names.append(name)
+    _apps_cache["at"] = now
+    _apps_cache["names"] = names
     return names
 
 
