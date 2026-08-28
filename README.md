@@ -40,6 +40,19 @@ anywhere in that path, and with `actions = false` directives are stripped and
 ignored. Turn it on if you want a voice assistant that acts. Leave it off and
 the agent can only talk.
 
+**Web search is off by default.** Give an agent a `web_command` (see the
+example config) and it can answer with one web-enabled round: the normal
+no-tools call may reply with a search request, and Jarvis re-invokes the
+agent with the CLI's own read-only search tool granted -- `WebSearch` for
+Claude Code, enforced by the CLI -- and nothing else. The two calls split the
+trust: the call that can act never saw the web, and the call that saw the web
+cannot act -- every directive in its reply is stripped and ignored, and there
+is no second hop. So a hostile page the search surfaced can at worst say
+something wrong out loud; it cannot open apps or URLs or search again. Two
+things to accept before enabling it: your question may reach a search
+provider through the agent, and a spoken answer is only as good as the pages
+behind it.
+
 A panic switch is one keybinding away in `~/.config/hypr/bindings.conf`:
 
 ```ini
@@ -157,6 +170,12 @@ Use `{outfile}` when the CLI prints progress logs to stdout, or
 grant. The agent asks by ending its reply with a `<<jarvis:open-… >>`
 directive line, and the daemon brokers it through `jarvis-open`. The CLI
 needs no tool support at all, and none of the presets pass any tool flags.
+
+`web_command` is the one exception, and it is opt-in: web search only works
+with a CLI that can grant a read-only search tool by flag (Claude Code can).
+A CLI that cannot simply stays search-less -- do not reach for a fetch tool
+or a shell to fake it; the daemon will warn, and a hostile page would thank
+you.
 
 ## How it works
 

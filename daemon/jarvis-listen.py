@@ -112,6 +112,27 @@ ACTIONS_PROMPT = (
     "machine, say out loud that you cannot."
 )
 
+# The web half. Only sent to agents configured with a web_command. The first
+# call still runs with no tools; asking to search hands the exchange to a
+# second, search-capable invocation whose reply is treated as tainted -- see
+# run_search below.
+WEB_PROMPT = (
+    "If answering needs current information from the web, reply with only "
+    "this line and nothing else: <<jarvis:search WHAT TO LOOK UP>>. Jarvis "
+    "will run one web-enabled round and speak its answer. Do not search for "
+    "things you already know, and never combine a search line with an open "
+    "line."
+)
+
+# System prompt for the web-enabled second call. Deliberately excludes
+# ACTIONS_PROMPT and WEB_PROMPT: this call can read the open web, so it gets
+# no way to ask for anything -- no opens, no further searches.
+WEB_TURN_PROMPT = (
+    "Use your web search tool to find what the question needs, then answer "
+    "from what you found. Say plainly if the search settles nothing. Do not "
+    "read URLs aloud."
+)
+
 def _state_root():
     """Where the pipeline-state file lives.
 
@@ -187,6 +208,20 @@ class Agent:
         if not 0 < self.timeout <= 3600:
             raise ValueError(f"agent '{name}': 'timeout' must be between "
                              "0 and 3600 seconds")
+
+        # A second argv for the web-enabled round of a search exchange --
+        # the one place a (CLI-enforced, read-only) search tool grant
+        # belongs. Its presence is what enables search for this agent.
+        web_command = spec.get("web_command")
+        if web_command is not None:
+            if not isinstance(web_command, list) or not web_command \
+                    or not all(isinstance(p, str) for p in web_command):
+                raise ValueError(f"agent '{name}': 'web_command' must be a "
+                                 "non-empty array of strings")
+        self.web_command = web_command
+        self.web = web_command is not None
+        self.web_uses_outfile = any("{outfile}" in part
+                                    for part in web_command or [])
         # A {outfile} anywhere in argv means the reply is written to a file
         # rather than printed -- the escape hatch for CLIs whose stdout is a
         # progress log.
@@ -194,15 +229,18 @@ class Agent:
 
     @property
     def system_prompt(self):
+        parts = [STYLE_PROMPT]
         if self.actions:
-            return STYLE_PROMPT + "\n\n" + ACTIONS_PROMPT
-        return STYLE_PROMPT
+            parts.append(ACTIONS_PROMPT)
+        if self.web:
+            parts.append(WEB_PROMPT)
+        return "\n\n".join(parts)
 
     @property
     def executable(self):
         return self.command[0]
 
-    def build_invocation(self, prompt, outfile, system_extra=""):
+    def build_invocation(self, prompt, outfile, system_extra="", web=False):
         """(argv, stdin_payload) for one question.
 
         The transcript only lands in argv if the command template asks for it
@@ -210,8 +248,16 @@ class Agent:
         the presets don't. Without {prompt}, the transcript is fed on stdin;
         a template that names neither {prompt} nor {system} gets both there,
         system prompt first, for CLIs with no system-prompt flag.
+
+        web=True builds the search-capable second call: web_command's argv,
+        and a system prompt that offers no directives of any kind.
         """
-        system = self.system_prompt
+        if web:
+            command = self.web_command
+            system = STYLE_PROMPT + "\n\n" + WEB_TURN_PROMPT
+        else:
+            command = self.command
+            system = self.system_prompt
         if system_extra:
             system += "\n\n" + system_extra
         fields = {
@@ -221,7 +267,7 @@ class Agent:
         }
         used = set()
         argv = []
-        for part in self.command:
+        for part in command:
             for token, value in fields.items():
                 if token in part:
                     used.add(token)
@@ -280,8 +326,20 @@ def select_agent(cfg):
            for part in agent.command):
         log(f"warning: agent '{agent.name}' grants the CLI tools in `command`. "
             "Jarvis never needs that: actions go through the jarvis-open "
-            "broker. Remove the tool flags unless you accept the risk.")
-    log(f"agent: {agent.name} ({'can act' if agent.actions else 'answer-only'})")
+            "broker, and a search grant belongs in `web_command`. Remove the "
+            "tool flags unless you accept the risk.")
+    # The web invocation reads the open internet, so what it may hold matters
+    # more, not less: WebFetch or a shell there hands a hostile page an
+    # exfiltration channel. WebSearch alone is the sanctioned grant.
+    if any("WebFetch" in part or "Bash" in part or "--dangerously" in part
+           for part in agent.web_command or []):
+        log(f"warning: agent '{agent.name}' grants `web_command` more than "
+            "web search. A fetch tool or a shell in the web-enabled call "
+            "lets a hostile page exfiltrate or act; grant WebSearch only.")
+    caps = "can act" if agent.actions else "answer-only"
+    if agent.web:
+        caps += ", web search"
+    log(f"agent: {agent.name} ({caps})")
     return agent
 
 
@@ -558,20 +616,27 @@ def transcribe(path):
     return lines[-1] if lines else ""
 
 
-def ask_agent(agent, prompt):
-    """Run the configured agent CLI and return its spoken reply, or ''."""
+def ask_agent(agent, prompt, web=False):
+    """Run the configured agent CLI and return its spoken reply, or ''.
+
+    web=True runs the agent's web_command instead -- the search-capable
+    second half of a search exchange. The caller treats that reply as
+    tainted: no directive from it is ever executed.
+    """
     outfile = None
-    if agent.uses_outfile:
+    uses_outfile = agent.web_uses_outfile if web else agent.uses_outfile
+    if uses_outfile:
         fd, outfile = tempfile.mkstemp(suffix=".txt", prefix="jarvis-reply-")
         os.close(fd)
 
     system_extra = ""
-    if agent.actions:
+    if agent.actions and not web:
         apps = installed_apps()
         if apps:
             system_extra = "Installed apps: " + ", ".join(apps) + "."
 
-    argv, stdin_payload = agent.build_invocation(prompt, outfile, system_extra)
+    argv, stdin_payload = agent.build_invocation(prompt, outfile, system_extra,
+                                                 web=web)
 
     try:
         try:
@@ -634,10 +699,16 @@ def clean_reply(text, strip_prefixes):
 # or open an http(s) URL, nothing else. A prompt-level instruction plus a
 # shell allowlist is not an authorization boundary; this is enforced where
 # the agent cannot reach it.
+#
+# The optional search hand-off (run_search) rides the same rails: the
+# no-tools first call may request one web-enabled round, and the reply of
+# that round -- the only place web content can enter -- has every directive
+# stripped and ignored, so what came off the web can never act here.
 # --------------------------------------------------------------------------
 
 DIRECTIVE_RE = re.compile(
-    r"^\s*<<jarvis:open-(app|url)\s+([^<>\n]{1,2048}?)\s*>>\s*$")
+    r"^\s*<<jarvis:(open-app|open-url|search)\s+([^<>\n]{1,2048}?)\s*>>\s*$")
+_DIRECTIVE_KINDS = {"open-app": "app", "open-url": "url", "search": "search"}
 # What we will pass the broker as an app query: printable, no leading dash,
 # short. The broker only fuzzy-matches it against installed .desktop names.
 APP_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")
@@ -712,7 +783,8 @@ def extract_directive(reply):
         match = DIRECTIVE_RE.match(line)
         if match:
             if directive is None:
-                directive = (match.group(1), match.group(2).strip())
+                directive = (_DIRECTIVE_KINDS[match.group(1)],
+                             match.group(2).strip())
             continue
         kept.append(line)
     return "\n".join(kept).strip(), directive
@@ -750,6 +822,37 @@ def run_directive(directive):
     else:
         log(f"jarvis-open: {proc.stdout.strip()[:200]}")
     return True
+
+
+MAX_SEARCH_QUERY_CHARS = 400
+
+
+def run_search(agent, query, log_text=False):
+    """The web-enabled second half of a search exchange. Returns spoken text.
+
+    The gating here is by construction, not by trust. The first call ran
+    with no tools at all, so nothing from the open web can have entered it:
+    a directive it emits traces back to the speaker, and is executed. This
+    call reads the web, so nothing it emits is trusted: every directive in
+    its reply -- an open, another search -- is stripped and ignored, which
+    is what makes granting the search tool safe at all, and why there is
+    exactly one hop.
+    """
+    if not agent.web:
+        log("agent asked to search but has no web_command; refused")
+        return "Sorry, I cannot search the web."
+    query = " ".join(query.split())
+    if not 0 < len(query) <= MAX_SEARCH_QUERY_CHARS:
+        log("search query failed validation; refused")
+        return "Sorry, I could not run that search."
+    # The query is derived from what was spoken: journal its size, not it.
+    log(f"searching: {query}" if log_text else
+        f"searching ({len(query)} characters)")
+    reply, stray = extract_directive(ask_agent(agent, query, web=True))
+    if stray:
+        log(f"directive in a web-tainted reply ignored ({stray[0]})")
+    return (reply[:MAX_SPOKEN_CHARS]
+            or "Sorry, the search did not come back with an answer.")
 
 
 def speak(text, voice):
@@ -798,6 +901,9 @@ def respond(agent, voice, text, log_text=False):
     log(f"heard: {text}" if log_text else f"heard {len(text)} characters")
     answer, directive = extract_directive(ask_agent(agent, text))
     answer = answer[:MAX_SPOKEN_CHARS]
+    if directive and directive[0] == "search":
+        answer = run_search(agent, directive[1], log_text)
+        directive = None
     if directive:
         if agent.actions:
             ok = run_directive(directive)
@@ -934,6 +1040,8 @@ def main():
             found = "ok" if shutil.which(agent.executable) else "not installed"
             mark = "*" if name == cfg.get("agent") else " "
             kind = "can act" if agent.actions else "answer-only"
+            if agent.web:
+                kind += " +web"
             print(f"{mark} {name:12} {found:15} {kind}")
         return 0
 

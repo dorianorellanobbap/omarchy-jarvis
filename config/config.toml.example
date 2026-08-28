@@ -53,6 +53,18 @@ cooldown       = 1.0   # ignore the wake word this long after replying
 # can open an app or a web page on your screen. That is a fine trade to make
 # on purpose. It is not one to inherit from a default.
 #
+# `web_command`, when present, lets the agent answer with one web-enabled
+# round. The normal call still runs `command` -- no tools, as always -- and
+# may reply <<jarvis:search WHAT>>; Jarvis then re-invokes the agent with
+# `web_command`, which grants the CLI's own read-only search tool and
+# nothing else, and speaks that answer. The web-enabled reply is treated as
+# tainted: every directive in it is stripped and ignored, and there is no
+# second hop, so a page the search surfaced can never open apps or URLs
+# here. Grant WebSearch only -- never WebFetch or Bash, either of which
+# would hand a hostile page an exfiltration channel (the daemon warns if it
+# sees them). Know that your question may then reach a search provider
+# through the agent, not just the agent itself.
+#
 # Both presets below are tested. Adding another CLI is just another section --
 # run `jarvis-listen --agents` to see what's configured and installed, and
 # `jarvis-listen --ask "hello"` to try one without using the mic. If you get a
@@ -69,6 +81,13 @@ command = [
 ]
 # Set true to let Jarvis open apps and web pages. Read the note above first.
 actions = false
+# Uncomment to let Jarvis search the web (one bounded round, WebSearch only;
+# read the web_command note above first).
+# web_command = [
+#   "claude", "-p",
+#   "--append-system-prompt", "{system}",
+#   "--allowedTools", "WebSearch",
+# ]
 
 [agents.codex]
 # OpenAI Codex in its read-only sandbox. The trailing "-" makes `codex exec`

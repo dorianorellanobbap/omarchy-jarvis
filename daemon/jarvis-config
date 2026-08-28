@@ -238,6 +238,7 @@ def cmd_show(daemon, args):
         agents.append({
             "name": name,
             "actions": agent.actions,
+            "web": agent.web,
             "installed": bool(__import__("shutil").which(agent.executable)),
         })
 
