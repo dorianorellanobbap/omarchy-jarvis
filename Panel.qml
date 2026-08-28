@@ -56,6 +56,11 @@ Panel {
   // the pending note explains why.
   property bool pendingRestart: false
 
+  // Arming starts the daemon, which reads the file as it comes up, so the
+  // listener is current by definition and the notice has nothing left to
+  // warn about. This is what resolves the disarmed case the notice describes.
+  onArmedChanged: if (root.armed) root.pendingRestart = false
+
   function open()   { load(); root.controller.show() }
   function close()  { root.controller.hide() }
   function toggle() { root.opened ? root.close() : root.open() }
@@ -190,6 +195,28 @@ Panel {
     command: ["systemctl", "--user", "restart", "jarvis"]
     onExited: function(code) {
       if (code !== 0) root.errorText = "Saved, but restarting the listener failed."
+      // A restart is the one thing that makes the running daemon current
+      // again, so it is also what clears the notice -- including the one
+      // our own write raised a moment ago.
+      else root.pendingRestart = false
+    }
+  }
+
+  // The daemon reads config.toml once, at startup. Anything that edits the
+  // file behind it -- the Edit config button, a text editor, another machine
+  // syncing -- leaves the listener running settings that no longer match
+  // what the file says, with nothing on screen to say so. Watch the file and
+  // say so.
+  //
+  // No guard is needed against our own writes: `set` while armed already
+  // kicks a restart, and that restart clears the notice this raises.
+  FileView {
+    path: root.configPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: {
+      reload()
+      if (root.armed) root.pendingRestart = true
     }
   }
 
@@ -309,10 +336,12 @@ Panel {
             }
           }
 
-          // Only shown when it matters: a saved change the daemon has not read.
+          // Only shown when it matters: a change the daemon has not read.
+          // Disarmed, that resolves itself on the next arm; armed, it takes
+          // a restart, and the button for it is at the bottom of this panel.
           BorderSurface {
             width: parent.width
-            visible: root.pendingRestart && !root.armed
+            visible: root.pendingRestart
             implicitHeight: pendingText.implicitHeight + Style.space(16)
             radius: Style.cornerRadius
             color: Style.normalFillFor(root.fg, root.accent)
@@ -322,7 +351,9 @@ Panel {
               id: pendingText
               anchors.centerIn: parent
               width: parent.width - Style.space(20)
-              text: "Saved. Takes effect when you arm the listener."
+              text: root.armed
+                ? "The config file changed. Restart the listener to use it."
+                : "Saved. Takes effect when you arm the listener."
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
