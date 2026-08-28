@@ -16,6 +16,7 @@ what it is doing without talking to this process.
 """
 
 import argparse
+import collections
 import os
 import re
 import shutil
@@ -23,6 +24,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import wave
@@ -363,6 +365,102 @@ def write_wav(samples, path):
 
 
 # --------------------------------------------------------------------------
+# Bounded subprocess execution
+# --------------------------------------------------------------------------
+
+# Ceilings on what a child process can make this always-on service hold.
+MAX_CAPTURE_BYTES = 1 << 20   # any child's stdout
+MAX_ERR_BYTES = 64 << 10      # stderr is only ever quoted in error messages
+MAX_SPOKEN_CHARS = 1200       # the reply is three short sentences; this is slack
+
+BoundedRun = collections.namedtuple(
+    "BoundedRun", "returncode stdout stderr overflowed")
+
+
+def run_bounded(argv, *, timeout, stdout_limit=MAX_CAPTURE_BYTES,
+                stderr_limit=MAX_ERR_BYTES, input_text=None, cwd=None):
+    """subprocess.run(capture_output=True) minus the unbounded buffering.
+
+    capture_output accumulates everything the child ever prints before any
+    caller-side truncation can happen, so one runaway or compromised
+    executable could grow this service without limit. Here each stream is
+    drained into a capped buffer as it is produced; the moment either stream
+    passes its ceiling the child is killed and the result comes back marked
+    `overflowed` -- callers treat that as a failure, never as a long answer.
+    A timeout kills the child and re-raises subprocess.TimeoutExpired, same
+    as subprocess.run. `input_text` is fed to the child's stdin from a
+    thread, so a child that never reads it cannot deadlock us; with no
+    input_text, stdin is /dev/null rather than our own.
+    """
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+    )
+    out_buf, err_buf = bytearray(), bytearray()
+    overflowed = threading.Event()
+
+    def drain(stream, buf, limit):
+        try:
+            while True:
+                chunk = stream.read(1 << 16)
+                if not chunk:
+                    return
+                if len(buf) + len(chunk) > limit:
+                    buf += chunk[:limit - len(buf)]
+                    overflowed.set()
+                    proc.kill()
+                    # Keep the pipe moving until EOF so the dying child is
+                    # never blocked writing to it.
+                    while stream.read(1 << 16):
+                        pass
+                    return
+                buf += chunk
+        except (OSError, ValueError):
+            pass
+
+    def feed():
+        try:
+            proc.stdin.write(input_text.encode("utf-8"))
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    threads = [
+        threading.Thread(target=drain, args=(proc.stdout, out_buf, stdout_limit)),
+        threading.Thread(target=drain, args=(proc.stderr, err_buf, stderr_limit)),
+    ]
+    if input_text is not None:
+        threads.append(threading.Thread(target=feed))
+    for t in threads:
+        t.daemon = True
+        t.start()
+
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        for t in threads:
+            t.join(timeout=5)
+        raise
+    # A grandchild holding the pipe open could stall a reader past the
+    # child's own exit; the join timeout (plus daemon threads) means it
+    # stalls the reader, not the listener.
+    for t in threads:
+        t.join(timeout=5)
+
+    return BoundedRun(
+        returncode=returncode,
+        stdout=out_buf.decode("utf-8", "replace"),
+        stderr=err_buf.decode("utf-8", "replace"),
+        overflowed=overflowed.is_set(),
+    )
+
+
+# --------------------------------------------------------------------------
 # Transcribe -> agent -> speak
 # --------------------------------------------------------------------------
 
@@ -374,10 +472,10 @@ VOXTYPE_NOISE = ("Loading ", "Audio format:", "Processing ", "whisper_")
 
 def transcribe(path):
     """Run voxtype's local whisper model. It logs to stdout, so take the tail."""
-    proc = subprocess.run(
-        ["voxtype", "transcribe", path],
-        capture_output=True, text=True, timeout=120, check=False,
-    )
+    proc = run_bounded(["voxtype", "transcribe", path], timeout=120)
+    if proc.overflowed:
+        log("voxtype exceeded its output ceiling; transcription discarded")
+        return ""
     lines = []
     for raw in proc.stdout.splitlines():
         line = ANSI.sub("", raw).strip()
@@ -398,44 +496,42 @@ def ask_agent(agent, prompt):
 
     argv = agent.build_argv(prompt, outfile)
 
-    env = dict(os.environ)
-    # jarvis-open has to be findable by name for the allowlist to match.
-    env["PATH"] = JARVIS_BIN + os.pathsep + env.get("PATH", "")
-
     try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True,
-            timeout=agent.timeout, check=False, cwd=HOME, env=env,
-        )
-    except FileNotFoundError:
-        log(f"agent '{agent.name}': '{agent.executable}' not found on PATH")
-        return ""
-    except subprocess.TimeoutExpired:
-        log(f"agent '{agent.name}' timed out after {agent.timeout:.0f}s")
-        return ""
-
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip()[:200]
-        log(f"agent '{agent.name}' failed (exit {proc.returncode}): {detail}")
-        return ""
-
-    if outfile:
         try:
-            # mkstemp made this one, but it lives in a world-writable /tmp
-            # for the lifetime of the agent call: read it back the same
-            # careful way as anything else, and cap what a runaway agent
-            # can make us hold in memory.
-            return safefile.read_text(outfile, safefile.MAX_TEXT_BYTES).strip()
-        except OSError:
-            log(f"agent '{agent.name}' wrote no reply file")
+            proc = run_bounded(argv, timeout=agent.timeout, cwd=HOME)
+        except FileNotFoundError:
+            log(f"agent '{agent.name}': '{agent.executable}' not found on PATH")
             return ""
-        finally:
+        except subprocess.TimeoutExpired:
+            log(f"agent '{agent.name}' timed out after {agent.timeout:.0f}s")
+            return ""
+
+        if proc.overflowed:
+            log(f"agent '{agent.name}' exceeded its output ceiling; reply discarded")
+            return ""
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).strip()[:200]
+            log(f"agent '{agent.name}' failed (exit {proc.returncode}): {detail}")
+            return ""
+
+        if outfile:
+            try:
+                # mkstemp made this one, but it lives in a world-writable /tmp
+                # for the lifetime of the agent call: read it back the same
+                # careful way as anything else, and cap what a runaway agent
+                # can make us hold in memory.
+                return safefile.read_text(outfile, safefile.MAX_TEXT_BYTES).strip()
+            except OSError:
+                log(f"agent '{agent.name}' wrote no reply file")
+                return ""
+
+        return clean_reply(proc.stdout, agent.strip_prefixes)
+    finally:
+        if outfile:
             try:
                 os.unlink(outfile)
             except OSError:
                 pass
-
-    return clean_reply(proc.stdout, agent.strip_prefixes)
 
 
 def clean_reply(text, strip_prefixes):
@@ -450,16 +546,19 @@ def clean_reply(text, strip_prefixes):
 
 
 def speak(text, voice):
+    # Belt-and-braces: respond() caps the reply too, but nothing longer than
+    # this ever reaches the synthesiser regardless of the path in.
+    text = text[:MAX_SPOKEN_CHARS]
     if not text:
         return
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         out = tmp.name
     try:
         try:
-            subprocess.run(
+            run_bounded(
                 [VENV_PY, "-m", "piper", "-m", voice, "-f", out],
-                input=text, text=True, capture_output=True, timeout=180,
-                check=False,
+                input_text=text, timeout=180,
+                stdout_limit=64 << 10, stderr_limit=64 << 10,
             )
         except subprocess.TimeoutExpired:
             log("speech synthesis timed out")
@@ -479,6 +578,7 @@ def respond(agent, voice, text):
     """Shared tail of the pipeline: ask, then say the answer out loud."""
     log(f"heard: {text}")
     answer = ask_agent(agent, text) or "Sorry, I could not get an answer."
+    answer = answer[:MAX_SPOKEN_CHARS]
     log(f"reply: {answer[:120]}")
     set_state("speaking")
     speak(answer, voice)
