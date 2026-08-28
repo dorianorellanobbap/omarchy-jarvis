@@ -315,10 +315,14 @@ def select_agent(cfg):
         raise SystemExit(f"[jarvis] {exc}")
     if shutil.which(agent.executable) is None:
         log(f"warning: '{agent.executable}' is not on PATH -- replies will fail")
-    if any("{prompt}" in part for part in agent.command):
-        log(f"warning: agent '{agent.name}' puts the transcript in argv, where "
-            "every local process can read it; drop {prompt} from `command` to "
-            "send it on stdin instead")
+    # Both argv templates, not just the first: web_command carries a search
+    # query derived from the same transcript, and argv is argv.
+    for label, template in (("command", agent.command),
+                            ("web_command", agent.web_command or [])):
+        if any("{prompt}" in part for part in template):
+            log(f"warning: agent '{agent.name}' puts the transcript in argv "
+                f"via `{label}`, where every local process can read it; drop "
+                f"{{prompt}} from `{label}` to send it on stdin instead")
     # Actions are brokered by this daemon, never by a tool grant to the CLI.
     # A command that hands the agent tools anyway isn't something we can
     # police -- it's the user's argv -- but it deserves a loud note.
@@ -815,10 +819,17 @@ def run_directive(directive):
     if kind == "url":
         # A search URL carries the spoken question verbatim in its query
         # string, and the journal must not learn the transcript through a
-        # side door. Audit the destination's origin, never the full URL.
+        # side door. Audit the destination's origin, never the full URL --
+        # and build that origin from hostname/port rather than netloc, which
+        # would carry any `user:password@` straight into the journal we are
+        # trying to keep secrets out of.
         origin = urllib.parse.urlsplit(value)
-        log(f"jarvis-open: opened {origin.scheme}://{origin.netloc} "
-            "(full url not journaled)")
+        try:
+            host, port = origin.hostname or "", origin.port
+        except ValueError:      # a malformed port; the host is still the fact
+            host, port = origin.hostname or "", None
+        where = f"{origin.scheme}://{host}" + (f":{port}" if port else "")
+        log(f"jarvis-open: opened {where} (full url not journaled)")
     else:
         log(f"jarvis-open: {proc.stdout.strip()[:200]}")
     return True
