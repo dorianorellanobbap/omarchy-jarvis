@@ -30,7 +30,11 @@ unsandboxed with your user's permissions.
 
 **Actions are off by default.** Set `actions = true` and the agent can also
 **launch apps and open URLs**. Worth being precise about what holds that
-line: the agent CLI is never granted a shell or a tool, in either mode. To
+line: the agent CLI is never granted a shell or a tool, in either mode, and
+that is a flag on the invocation rather than a hope -- the shipped Claude
+preset passes `--tools ""` (the empty built-in allowlist) and
+`--strict-mcp-config` with no `--mcp-config`, so neither the built-in tools
+nor any MCP server from your own config is loaded for the call. To
 act, it ends its reply with a structured `<<jarvis:open-app …>>` or
 `<<jarvis:open-url …>>` line; the daemon parses that against a strict
 pattern, validates the argument, and directly execs `jarvis-open` -- a broker

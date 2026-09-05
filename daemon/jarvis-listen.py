@@ -19,6 +19,7 @@ import argparse
 import collections
 import os
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -72,13 +73,22 @@ DEFAULTS = {
     "agents": {
         "claude": {
             # No {prompt} in argv: the transcript is fed to `claude -p` on
-            # stdin, where it is not readable out of the process list. And no
-            # tool flags: the agent CLI is invoked answer-only in *both*
-            # modes. With actions = true the daemon parses a strictly
-            # validated <<jarvis:open-...>> directive out of the reply text
-            # and execs the jarvis-open broker itself, so there is never a
-            # tool grant for a spoken or injected request to aim at.
+            # stdin, where it is not readable out of the process list.
+            #
+            # The tool flags are the deny boundary, and both are load-bearing.
+            # Passing no tool flags at all is *not* answer-only: `claude -p`
+            # still exposes its built-in read tools, and still loads whatever
+            # MCP servers the user's own configuration defines, so a sentence
+            # spoken near the mic could read local files through an agent we
+            # meant to be a text box. `--tools ""` is the CLI's empty built-in
+            # allowlist, and `--strict-mcp-config` with no accompanying
+            # --mcp-config loads no MCP servers, so an inherited user or
+            # project config cannot put tools back. With actions = true the
+            # daemon parses a strictly validated <<jarvis:open-...>> directive
+            # out of the reply text and execs the jarvis-open broker itself,
+            # so there is still never a tool grant to aim at.
             "command": ["claude", "-p",
+                        "--tools", "", "--strict-mcp-config",
                         "--append-system-prompt", "{system}"],
             # Off unless the config says otherwise. Letting a sentence spoken
             # near the mic open apps and URLs is a decision the person
@@ -96,6 +106,17 @@ STYLE_PROMPT = (
     "You are a voice assistant. Your reply will be read aloud by a "
     "text-to-speech engine, so answer in at most three short sentences of "
     "plain spoken English. No markdown, no lists, no code blocks, no URLs."
+)
+
+# Sent whenever the invocation grants the CLI no tools, which is what the
+# shipped presets do. Without it the model does not know its tools are gone:
+# it answers a "read this file" with tool-call syntax, which is then read
+# aloud as punctuation soup. Telling it plainly gets a plain refusal instead.
+# Left off an invocation the user has given tools to, where it would be false.
+NO_TOOLS_PROMPT = (
+    "You have no tools in this conversation. You cannot read or write files, "
+    "run commands, or browse. If answering would need one, say so in a short "
+    "spoken sentence. Never write out a tool call or any other markup."
 )
 
 # The actions half. Only sent to agents configured with actions = true. The
@@ -230,6 +251,8 @@ class Agent:
     @property
     def system_prompt(self):
         parts = [STYLE_PROMPT]
+        if not grants_tools(self.command):
+            parts.append(NO_TOOLS_PROMPT)
         if self.actions:
             parts.append(ACTIONS_PROMPT)
         if self.web:
@@ -301,6 +324,25 @@ def load_config(path=CONFIG_PATH):
     return cfg
 
 
+def grants_tools(argv):
+    """True if this argv hands the agent CLI tools of its own.
+
+    `--tools ""` is how the shipped invocation *removes* the built-in set, so
+    a --tools whose value is empty is a denial, not a grant; anything else
+    after it names tools to keep. --allowedTools adds to whatever is already
+    there, so it is always a grant.
+    """
+    for i, part in enumerate(argv):
+        if "--dangerously" in part or "--allowedTools" in part \
+                or "--allowed-tools" in part:
+            return True
+        if part == "--tools":
+            return bool(argv[i + 1].strip()) if i + 1 < len(argv) else False
+        if part.startswith("--tools="):
+            return bool(part.split("=", 1)[1].strip())
+    return False
+
+
 def select_agent(cfg):
     """Resolve cfg['agent'] to an Agent, failing loudly on a bad name."""
     name = cfg.get("agent", "claude")
@@ -325,9 +367,9 @@ def select_agent(cfg):
                 f"{{prompt}} from `{label}` to send it on stdin instead")
     # Actions are brokered by this daemon, never by a tool grant to the CLI.
     # A command that hands the agent tools anyway isn't something we can
-    # police -- it's the user's argv -- but it deserves a loud note.
-    if any("--allowedTools" in part or "--dangerously" in part
-           for part in agent.command):
+    # police -- it's the user's argv -- but it deserves a loud note. An
+    # *empty* --tools is the opposite of a grant, so it doesn't count.
+    if grants_tools(agent.command):
         log(f"warning: agent '{agent.name}' grants the CLI tools in `command`. "
             "Jarvis never needs that: actions go through the jarvis-open "
             "broker, and a search grant belongs in `web_command`. Remove the "
@@ -505,13 +547,39 @@ def write_wav(samples, path):
 MAX_CAPTURE_BYTES = 1 << 20   # any child's stdout
 MAX_ERR_BYTES = 64 << 10      # stderr is only ever quoted in error messages
 MAX_SPOKEN_CHARS = 1200       # the reply is three short sentences; this is slack
+# Pipes are drained and capped below, but a child writing to a *file* -- the
+# agent's reply file, piper's wav -- is writing past us, and a runaway one
+# would keep going until its timeout or until the disk filled. RLIMIT_FSIZE
+# is the ceiling the kernel enforces on our behalf: the child dies on SIGXFSZ
+# instead. Both values are deliberately generous, because that rlimit applies
+# to every file the child writes and not only the one we asked for -- an agent
+# CLI also writes its own session and cache files, and killing it over one of
+# those would be a bug we shipped for no gain. Read them as "cannot fill the
+# disk", not as a tight fit: the reply we actually keep is capped again at
+# read-back by safefile, and a capped reply synthesises to about two minutes
+# of audio.
+MAX_REPLY_FILE_BYTES = 64 << 20   # agent {outfile}: text, read back capped
+MAX_WAV_BYTES = 64 << 20          # piper -f: ~2 min of 22 kHz 16-bit mono
 
 BoundedRun = collections.namedtuple(
     "BoundedRun", "returncode stdout stderr overflowed")
 
 
+def _fsize_limiter(limit):
+    """A preexec_fn that caps what the child may write to any single file.
+
+    Deliberately one syscall and nothing else: this runs between fork and
+    exec in a process that inherited our threads' locks, so anything that
+    could allocate or take a lock would risk wedging the child there.
+    """
+    def apply():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+    return apply
+
+
 def run_bounded(argv, *, timeout, stdout_limit=MAX_CAPTURE_BYTES,
-                stderr_limit=MAX_ERR_BYTES, input_text=None, cwd=None):
+                stderr_limit=MAX_ERR_BYTES, input_text=None, cwd=None,
+                file_limit=None):
     """subprocess.run(capture_output=True) minus the unbounded buffering.
 
     capture_output accumulates everything the child ever prints before any
@@ -524,6 +592,11 @@ def run_bounded(argv, *, timeout, stdout_limit=MAX_CAPTURE_BYTES,
     as subprocess.run. `input_text` is fed to the child's stdin from a
     thread, so a child that never reads it cannot deadlock us; with no
     input_text, stdin is /dev/null rather than our own.
+
+    `file_limit` caps, via RLIMIT_FSIZE, what the child may write to any file
+    it opens -- the stream ceilings above say nothing about those. A child
+    that exceeds it dies on SIGXFSZ, which arrives here as a non-zero
+    returncode.
     """
     proc = subprocess.Popen(
         argv,
@@ -531,6 +604,7 @@ def run_bounded(argv, *, timeout, stdout_limit=MAX_CAPTURE_BYTES,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=cwd,
+        preexec_fn=_fsize_limiter(file_limit) if file_limit else None,
     )
     out_buf, err_buf = bytearray(), bytearray()
     overflowed = threading.Event()
@@ -645,7 +719,8 @@ def ask_agent(agent, prompt, web=False):
     try:
         try:
             proc = run_bounded(argv, timeout=agent.timeout,
-                               input_text=stdin_payload, cwd=HOME)
+                               input_text=stdin_payload, cwd=HOME,
+                               file_limit=MAX_REPLY_FILE_BYTES)
         except FileNotFoundError:
             log(f"agent '{agent.name}': '{agent.executable}' not found on PATH")
             return ""
@@ -880,6 +955,7 @@ def speak(text, voice):
                 [VENV_PY, "-m", "piper", "-m", voice, "-f", out],
                 input_text=text, timeout=180,
                 stdout_limit=64 << 10, stderr_limit=64 << 10,
+                file_limit=MAX_WAV_BYTES,
             )
         except subprocess.TimeoutExpired:
             log("speech synthesis timed out")

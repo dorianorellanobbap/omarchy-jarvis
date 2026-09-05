@@ -73,20 +73,28 @@ cooldown       = 1.0   # ignore the wake word this long after replying
 
 [agents.claude]
 # Claude Code. `claude -p` with no prompt argument reads the prompt from
-# stdin, and no tool flags are passed: the CLI runs answer-only in both
-# modes, with actions brokered by the daemon as described above.
+# stdin. The two tool flags are what make the call answer-only, and both
+# matter: `claude -p` on its own still has its built-in read tools and still
+# loads the MCP servers your own config defines. `--tools ""` is the empty
+# built-in allowlist and `--strict-mcp-config` (with no --mcp-config beside
+# it) loads no MCP servers, so nothing you have configured elsewhere can put
+# tools back. Actions stay brokered by the daemon as described above. Keep
+# both flags unless you have read the note above and accept the risk.
 command = [
   "claude", "-p",
+  "--tools", "", "--strict-mcp-config",
   "--append-system-prompt", "{system}",
 ]
 # Set true to let Jarvis open apps and web pages. Read the note above first.
 actions = false
 # Uncomment to let Jarvis search the web (one bounded round, WebSearch only;
-# read the web_command note above first).
+# read the web_command note above first). `--tools` names the whole built-in
+# set this call gets, so WebSearch there means WebSearch and nothing else --
+# an allowlist that only adds a tool would leave the read tools in place.
 # web_command = [
 #   "claude", "-p",
+#   "--tools", "WebSearch", "--strict-mcp-config",
 #   "--append-system-prompt", "{system}",
-#   "--allowedTools", "WebSearch",
 # ]
 
 [agents.codex]
