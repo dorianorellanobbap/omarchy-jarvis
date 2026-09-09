@@ -8,8 +8,9 @@ on a continuous 16kHz mic stream, [voxtype]'s local whisper model transcribes,
 [piper] speaks the reply. Only the transcribed *text* ever leaves the machine,
 and only when you say the wake word.
 
-Which agent answers is configuration, not code. Ships working presets for
-**Claude Code** and **Codex**; adding another CLI is a few lines of TOML.
+Which agent answers is configuration, not code. Ships a tested, tool-free
+preset for **Claude Code**; adding another CLI is a few lines of TOML, with
+the caveat described in [`config/config.toml.example`](config/config.toml.example).
 
 [openWakeWord]: https://github.com/dscripka/openWakeWord
 [voxtype]: https://github.com/omarchy/voxtype
@@ -140,7 +141,7 @@ Everything else lives in `~/.config/jarvis/config.toml`. See
 commented.
 
 ```toml
-agent     = "claude"        # or "codex"
+agent     = "claude"        # the shipped preset
 wake_word = "hey_jarvis"    # or alexa, hey_mycroft, hey_marvin
 ```
 

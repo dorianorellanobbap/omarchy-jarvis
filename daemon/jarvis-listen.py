@@ -7,8 +7,9 @@ listens on a continuous 16kHz mic stream (~3% of one core), voxtype's whisper
 model transcribes, piper speaks the reply.
 
 Which agent answers is configuration, not code -- see config.toml.example.
-Point it at Claude Code, Codex, a local ollama model, or anything else with a
-non-interactive CLI.
+Point it at Claude Code, a local ollama model, or anything else with a
+non-interactive CLI, bearing in mind that only an invocation which actually
+denies the CLI its tools is answer-only; that file explains how to check.
 
 Pipeline state is written to $XDG_RUNTIME_DIR/jarvis/state (falling back to
 $XDG_STATE_HOME, never to a world-writable /tmp) so the bar widget can show

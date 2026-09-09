@@ -65,10 +65,12 @@ cooldown       = 1.0   # ignore the wake word this long after replying
 # sees them). Know that your question may then reach a search provider
 # through the agent, not just the agent itself.
 #
-# Both presets below are tested. Adding another CLI is just another section --
-# run `jarvis-listen --agents` to see what's configured and installed, and
+# The one preset below is tested. Adding another CLI is just another section,
+# but read the note at the bottom of this file first: whether a CLI is really
+# answer-only is a property of its argv, not of its reputation. Run
+# `jarvis-listen --agents` to see what's configured and installed, and
 # `jarvis-listen --ask "hello"` to try one without using the mic. If you get a
-# new one working, a PR adding it is welcome.
+# new one working safely, a PR adding it is welcome.
 # ---------------------------------------------------------------------------
 
 [agents.claude]
@@ -97,15 +99,43 @@ actions = false
 #   "--append-system-prompt", "{system}",
 # ]
 
-[agents.codex]
-# OpenAI Codex in its read-only sandbox. The trailing "-" makes `codex exec`
-# read the prompt from stdin; the system prompt rides along there too, since
-# codex has no system-prompt flag. -o gives us the reply without the event
-# log.
-command = [
-  "codex", "exec", "--skip-git-repo-check", "--ephemeral",
-  "-s", "read-only", "--color", "never",
-  "-o", "{outfile}",
-  "-",
-]
-actions = false
+# ---------------------------------------------------------------------------
+# On Codex, and on writing your own preset
+#
+# There is deliberately no [agents.codex] section here, and it is worth
+# knowing why before you write one.
+#
+# The `command` above is answer-only because `--tools ""` removes the tools
+# from the conversation. Codex has no equivalent flag. Its only control is
+# `-s <read-only|workspace-write|danger-full-access>`, which sandboxes the
+# shell tool rather than removing it, and `read-only` means "cannot write",
+# not "cannot read". Under it the agent can still read every file you can
+# read. Verified against codex-cli 0.149.0:
+#
+#     $ codex sandbox -- cat ~/canary.txt
+#     CANARY                                  # the read succeeds
+#     $ codex sandbox -- sh -c 'echo x > ~/canary.txt'
+#     sh: /home/you/canary.txt: Read-only file system
+#
+# So a `codex exec -s read-only` preset is NOT answer-only. A sentence spoken
+# near the microphone can ask it to read your SSH keys, your browser cookies
+# or your password store and speak the contents back. `actions = false` does
+# not help: that only strips Jarvis's own <<jarvis:...>> directives, and has
+# no bearing on the agent CLI's own tools.
+#
+# The same test applies to any CLI you add here. Do not trust a flag name or
+# a sandbox mode to mean answer-only. Prove it: put a file with a known
+# string in your home directory, then run
+#
+#     jarvis-listen --ask "read ~/canary.txt and tell me what it says"
+#
+# If the string comes back, that CLI has tools and this is not a safe preset.
+# Jarvis cannot enforce this for you, because the boundary lives inside the
+# agent CLI's own argv. The daemon warns at startup when it can recognise a
+# tool grant, but it only knows the flags it knows.
+#
+# Running Codex safely here would mean confining it yourself, in an OS
+# sandbox exposing no user files beyond an empty workspace and with no
+# reusable credentials readable inside it. That is a real thing to build, not
+# a flag to set, which is why nothing here pretends to have done it.
+# ---------------------------------------------------------------------------
