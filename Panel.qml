@@ -76,10 +76,18 @@ Panel {
     return null
   }
 
+  // `actions` governs Jarvis's own directive broker, NOT whether the agent
+  // CLI has tools of its own. Deriving "answer-only" from it once let a
+  // read-only Codex sandbox, which could read the whole home directory,
+  // caption itself as answer-only right here. The daemon reports what it can
+  // actually verify in `tools`; anything it does not recognise says so.
   readonly property string agentNote: {
     var e = agentEntry(agent)
     if (!e) return ""
     if (!e.installed) return "not installed, replies will fail"
+    if (e.tools === "granted") return "this agent has CLI tools of its own"
+    if (e.tools !== "denied")
+      return "tools not verified: Jarvis cannot confirm this agent is answer-only"
     return e.actions ? "can open apps and URLs" : "answer-only"
   }
 

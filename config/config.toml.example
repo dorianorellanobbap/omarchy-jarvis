@@ -131,8 +131,12 @@ actions = false
 #
 # If the string comes back, that CLI has tools and this is not a safe preset.
 # Jarvis cannot enforce this for you, because the boundary lives inside the
-# agent CLI's own argv. The daemon warns at startup when it can recognise a
-# tool grant, but it only knows the flags it knows.
+# agent CLI's own argv. What it does do is refuse to guess: it calls an agent
+# "answer-only" only for an invocation it can positively verify is tool-free,
+# which today means Claude Code with an empty `--tools` and a strict MCP
+# config. Anything else, including a bare `claude -p`, is reported as "tools
+# not verified" in the panel, the journal and --check, with a warning at
+# startup. That is an admission, not a verdict: it means run the canary.
 #
 # Running Codex safely here would mean confining it yourself, in an OS
 # sandbox exposing no user files beyond an empty workspace and with no

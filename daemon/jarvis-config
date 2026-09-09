@@ -240,6 +240,10 @@ def cmd_show(daemon, args):
             "actions": agent.actions,
             "web": agent.web,
             "installed": bool(__import__("shutil").which(agent.executable)),
+            # What the daemon can honestly say about this CLI's own tools.
+            # The panel must not infer "answer-only" from `actions`: that flag
+            # governs Jarvis's directive broker, not the CLI's tools.
+            "tools": daemon.tool_posture(agent.executable, agent.command),
         })
 
     print(json.dumps({

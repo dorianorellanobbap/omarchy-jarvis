@@ -174,6 +174,13 @@ def _state_root():
 STATE_DIR = os.path.join(_state_root(), "jarvis")
 STATE_FILE = os.path.join(STATE_DIR, "state")
 
+# The agent CLI's working directory. Deliberately NOT $HOME: a relative path
+# an agent tries to touch should land in an empty private directory rather
+# than among the user's files. The shipped Claude preset has no tools and so
+# cannot use it either way, but a user-written preset may, and cwd is a free
+# amplifier to give away. 0700 and under XDG_RUNTIME_DIR where available.
+AGENT_CWD = os.path.join(STATE_DIR, "agent-cwd")
+
 _running = True
 
 
@@ -304,6 +311,20 @@ class Agent:
         return argv, system + "\n\n" + prompt
 
 
+def agent_cwd():
+    """An empty private directory to run the agent CLI in, falling back to /.
+
+    Never $HOME. If the directory cannot be made, / is still a better cwd than
+    the user's files, and the call proceeds rather than failing the reply.
+    """
+    try:
+        os.makedirs(AGENT_CWD, mode=0o700, exist_ok=True)
+        return AGENT_CWD
+    except OSError as exc:
+        log(f"could not create {AGENT_CWD} ({exc}); running the agent in /")
+        return "/"
+
+
 def load_config(path=CONFIG_PATH):
     """DEFAULTS, with ~/.config/jarvis/config.toml layered on top if present."""
     cfg = DEFAULTS
@@ -344,6 +365,57 @@ def grants_tools(argv):
     return False
 
 
+# Agent CLIs whose flag vocabulary this daemon actually knows. Recognising a
+# *denial* is not the same problem as recognising a grant: to say an
+# invocation is tool-free we have to know which flag removes the tools and
+# what its absence implies, and that is per-CLI knowledge. We have it for
+# Claude Code and nothing else.
+KNOWN_CLIS = ("claude",)
+
+TOOLS_DENIED = "denied"      # verified tool-free
+TOOLS_GRANTED = "granted"    # verified to hand the CLI tools
+TOOLS_UNKNOWN = "unknown"    # we cannot tell, so we must not claim
+
+
+def tool_posture(executable, argv):
+    """What we can honestly say about the tools this invocation exposes.
+
+    The trap this exists to close: `actions` says whether *Jarvis* will act on
+    a <<jarvis:...>> directive. It says nothing about whether the agent CLI
+    has tools of its own. Reporting "answer-only" off `actions` alone once let
+    a `codex exec -s read-only` preset -- a live shell over $HOME -- describe
+    itself as answer-only in the panel, the journal and --check. An unknown
+    CLI is not a safe CLI, it is an unaudited one, and the label has to say so.
+    """
+    if grants_tools(argv):
+        return TOOLS_GRANTED
+    if os.path.basename(executable) not in KNOWN_CLIS:
+        return TOOLS_UNKNOWN
+    # Claude Code: tool-free requires *both* the empty built-in allowlist and
+    # a strict MCP config with nothing to load, or the user's own MCP servers
+    # come back. Bare `claude -p` is not answer-only.
+    empty_tools = any(
+        (part == "--tools" and i + 1 < len(argv) and not argv[i + 1].strip())
+        or (part.startswith("--tools=") and not part.split("=", 1)[1].strip())
+        for i, part in enumerate(argv)
+    )
+    strict_mcp = "--strict-mcp-config" in argv and not any(
+        part == "--mcp-config" or part.startswith("--mcp-config=")
+        for part in argv
+    )
+    return TOOLS_DENIED if (empty_tools and strict_mcp) else TOOLS_UNKNOWN
+
+
+def capability_label(agent):
+    """One phrase for the panel, the journal and --check, and never a lie."""
+    posture = tool_posture(agent.executable, agent.command)
+    if posture == TOOLS_GRANTED:
+        return "CLI tools granted"
+    if posture == TOOLS_UNKNOWN:
+        return "tools not verified"
+    return "can act" if agent.actions else "answer-only"
+
+
 def select_agent(cfg):
     """Resolve cfg['agent'] to an Agent, failing loudly on a bad name."""
     name = cfg.get("agent", "claude")
@@ -375,6 +447,17 @@ def select_agent(cfg):
             "Jarvis never needs that: actions go through the jarvis-open "
             "broker, and a search grant belongs in `web_command`. Remove the "
             "tool flags unless you accept the risk.")
+    elif tool_posture(agent.executable, agent.command) == TOOLS_UNKNOWN:
+        # Not an accusation, an admission: we do not know this CLI's flags, so
+        # we cannot tell a text box from a shell. Saying nothing here is what
+        # let a read-only Codex sandbox pass itself off as answer-only.
+        log(f"warning: agent '{agent.name}' runs '{agent.executable}', whose "
+            "tool flags Jarvis does not know, so it CANNOT confirm this "
+            "invocation is answer-only. A sandbox flag is not a tool denial: "
+            "some CLIs still read every file you can. Verify it yourself -- "
+            "put a known string in a file, then run `jarvis-listen --ask "
+            "\"read <that file> and tell me what it says\"`. If the string "
+            "comes back, this agent can read your home directory.")
     # The web invocation reads the open internet, so what it may hold matters
     # more, not less: WebFetch or a shell there hands a hostile page an
     # exfiltration channel. WebSearch alone is the sanctioned grant.
@@ -383,7 +466,7 @@ def select_agent(cfg):
         log(f"warning: agent '{agent.name}' grants `web_command` more than "
             "web search. A fetch tool or a shell in the web-enabled call "
             "lets a hostile page exfiltrate or act; grant WebSearch only.")
-    caps = "can act" if agent.actions else "answer-only"
+    caps = capability_label(agent)
     if agent.web:
         caps += ", web search"
     log(f"agent: {agent.name} ({caps})")
@@ -720,7 +803,7 @@ def ask_agent(agent, prompt, web=False):
     try:
         try:
             proc = run_bounded(argv, timeout=agent.timeout,
-                               input_text=stdin_payload, cwd=HOME,
+                               input_text=stdin_payload, cwd=agent_cwd(),
                                file_limit=MAX_REPLY_FILE_BYTES)
         except FileNotFoundError:
             log(f"agent '{agent.name}': '{agent.executable}' not found on PATH")
@@ -1127,7 +1210,7 @@ def main():
                 continue
             found = "ok" if shutil.which(agent.executable) else "not installed"
             mark = "*" if name == cfg.get("agent") else " "
-            kind = "can act" if agent.actions else "answer-only"
+            kind = capability_label(agent)
             if agent.web:
                 kind += " +web"
             print(f"{mark} {name:12} {found:15} {kind}")
