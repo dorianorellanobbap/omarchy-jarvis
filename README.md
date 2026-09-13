@@ -18,6 +18,46 @@ the caveat described in [`config/config.toml.example`](config/config.toml.exampl
 [voxtype]: https://github.com/omarchy/voxtype
 [piper]: https://github.com/rhasspy/piper
 
+## What you get
+
+**Free, with no account and no meter running.** No API key of its own, no
+signup, no per-minute billing. The wake word, the transcription and the voice
+are all local and free; the answer comes from an agent CLI you already have
+installed and already pay for, if you pay for one at all.
+
+**Your voice stays on your machine.** The audio is never uploaded. It is
+transcribed locally by whisper, and only the resulting *text* goes to the
+agent, only after you have said the wake word. Point it at a local model and
+nothing leaves at all.
+
+**Hands free, with nothing to press.** Say the wake word from across the room.
+No hotkey, no window to focus, no click.
+
+**The listening half works offline.** Wake word, transcription and speech need
+no network. Only the agent's answer does.
+
+**Any agent, your choice.** Which CLI answers is four lines of TOML, not a
+vendor lock. Ships a tested preset for Claude Code; swap in anything with a
+non-interactive CLI, including a local model.
+
+**The agent never gets a shell or a tool.** Not a promise in a prompt, a flag
+on the invocation: `--tools ""` and `--strict-mcp-config`, so neither the
+built-in tools nor anything from your own MCP config is loaded. When it acts,
+it asks in a structured line that a separate broker validates and executes.
+Details below.
+
+**It can open things for you.** Apps, web pages, and your Chromium bookmarks
+by name, several at once. Your bookmarks are matched locally and never shown
+to the agent.
+
+**Set up and tested from the bar.** One button installs it. Another tests your
+microphone and tells you in plain words whether your voice actually clears the
+noise in your room.
+
+**It adapts to your microphone.** Levels are measured against your own room
+rather than a fixed number, so it works the same at 30% input volume as at
+70%, and on hardware whose mic does not rest at zero.
+
 ---
 
 ## ⚠️ Read this before installing
@@ -87,6 +127,15 @@ Two more things worth knowing:
 
 ```sh
 omarchy plugin add https://github.com/dorianorellanobbap/omarchy-jarvis.git --enable
+```
+
+Add the **Jarvis** widget to your bar, log out and back in, then click the
+widget and press **Set up Jarvis**. That runs the installer for you and shows
+what it is doing. Nothing else is needed, and it never asks for your password.
+
+Prefer a terminal, or want to see the script first? It is the same one:
+
+```sh
 ~/.config/omarchy/plugins/dorian.voice/install.sh
 ```
 
@@ -99,8 +148,14 @@ cd omarchy-jarvis && ./install.sh
 
 The script builds a Python venv, fetches and checksums the piper voice (63MB),
 installs a systemd **user** unit, writes a starter config, and verifies the
-result. It is idempotent, so re-run it any time. Then add the **Jarvis**
-widget to your bar and log out and back in.
+result. It is idempotent, so re-run it any time, from the panel button or the
+command line.
+
+Once it is running, **Test microphone** in the panel checks the part nobody
+can see: whether your voice actually rises above your room. A muted mic, an
+input volume too low, or a microphone that does not rest at zero all look
+exactly like a wake word that will not fire, and the test names which one it
+is.
 
 The unit is installed but **not enabled**: nothing holds the mic open until you
 arm it from the widget. If you want it armed from login, that is an explicit
