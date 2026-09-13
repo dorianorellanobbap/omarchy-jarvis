@@ -141,6 +141,21 @@ results.append(check(
         ambient=noisy, voice_level=600),
     2.0 + LISTEN["silence_tail"]))
 
+# People announce the wake word and then speak the question normally, so a
+# bar set from the wake word alone sits above the sentence it should catch.
+# After a few questions the listener knows better than the wake word does.
+jl._spoken_peaks.clear()
+loud_wake, normal_voice = 600, 300
+on_before, _ = jl.thresholds(225.0, jl.voice_reference(loud_wake))
+for _ in range(4):
+    jl._spoken_peaks.append(normal_voice)
+on_after, _ = jl.thresholds(225.0, jl.voice_reference(loud_wake))
+ok = on_before > normal_voice and on_after < normal_voice
+print(f"  {'PASS' if ok else 'FAIL'}  it learns a normal speaking voice "
+      f"(bar {on_before:.0f} -> {on_after:.0f}, voice {normal_voice})")
+results.append(ok)
+jl._spoken_peaks.clear()
+
 print()
 if all(results):
     print("all endpointing tests passed")
