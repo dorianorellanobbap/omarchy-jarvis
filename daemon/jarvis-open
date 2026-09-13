@@ -12,6 +12,7 @@ caller's.
     jarvis-open list            every launchable app name
     jarvis-open app <name>      launch one
     jarvis-open url <https://…> open a web page
+    jarvis-open bookmark <name> open a bookmark from Chromium's default profile
 
 It used to be a shell script that ran `grep` over every path matching
 $HOME/.local/share/applications/*.desktop and buffered the whole generated
@@ -23,10 +24,12 @@ through safefile: never blocking, regular files only, bounded per file and
 bounded in total.
 """
 
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import safefile  # noqa: E402  (needs our own directory on the path first)
@@ -47,6 +50,19 @@ MAX_ENTRIES = 4000
 # ours. Anything owned by a third uid is not a package's entry or one we
 # wrote, so it does not get read.
 OWNERS = {os.geteuid(), 0}
+
+# Chromium keeps bookmarks as one JSON file per profile. Only the default
+# profile is read: choosing a profile would mean taking a path from something
+# someone said out loud, and not doing that is this script's entire job.
+CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
+BOOKMARKS_PATH = os.path.join(CONFIG_HOME, "chromium", "Default", "Bookmarks")
+# A heavily used profile holds a few thousand bookmarks in a few hundred KB.
+# The ceiling is here so a huge or endless file fails instead of being read.
+MAX_BOOKMARKS_BYTES = 4 << 20
+MAX_BOOKMARKS = 5000
+# Bookmark folders nest; nothing legitimate nests this deep, and a file that
+# claims to is not one we need to finish reading.
+MAX_BOOKMARK_DEPTH = 32
 
 NAME_RE = re.compile(r"^Name\s*=\s*(.*)$")
 NODISPLAY_RE = re.compile(r"^NoDisplay\s*=\s*(.*)$")
@@ -129,6 +145,90 @@ def resolve(query):
     return None
 
 
+def bookmarks():
+    """[(title, url)] from the default Chromium profile. Never raises.
+
+    Read descriptor-first and bounded, for the same reasons the .desktop
+    reader is: this file belongs to another program, and a path that turns
+    out to be a FIFO must not hang the assistant while an agent call waits.
+
+    Only http and https survive the walk. A bookmark can hold a javascript:,
+    file: or chrome: URL, and handing one of those to xdg-open because a
+    sentence near a microphone asked for it is exactly the hole this broker
+    exists not to have.
+    """
+    try:
+        raw = safefile.read_text(BOOKMARKS_PATH, limit=MAX_BOOKMARKS_BYTES,
+                                 owners={os.geteuid()})
+    except Exception:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    found = []
+
+    def walk(node, depth):
+        if len(found) >= MAX_BOOKMARKS or depth > MAX_BOOKMARK_DEPTH:
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "url":
+            title, url = node.get("name"), node.get("url")
+            if isinstance(title, str) and isinstance(url, str) \
+                    and URL_RE.match(url):
+                found.append((title.strip(), url))
+            return
+        children = node.get("children")
+        if isinstance(children, list):
+            for child in children:
+                walk(child, depth + 1)
+
+    roots = data.get("roots")
+    if isinstance(roots, dict):
+        for root in roots.values():
+            walk(root, 0)
+    return found
+
+
+def resolve_bookmark(query):
+    """(title, url) for the closest bookmark, or None.
+
+    Exact title first, then a substring of the title, then the site's host,
+    so "github" finds a bookmark titled something else entirely. Only the
+    host: matching anywhere in the URL would let a query hit a word buried in
+    a query string, which is not something anyone asked to open.
+    """
+    query = " ".join(query.lower().split())
+    if not query:
+        return None
+    found = bookmarks()
+    for title, url in found:
+        if query == title.lower():
+            return title, url
+    for title, url in found:
+        if query in title.lower():
+            return title, url
+    for title, url in found:
+        if query in (urllib.parse.urlsplit(url).hostname or "").lower():
+            return title, url
+    return None
+
+
+def origin_of(url):
+    """scheme://host[:port], the part of a URL that is safe to print.
+
+    Built from hostname and port rather than netloc, which would carry any
+    user:password@ into whatever journals our output.
+    """
+    parts = urllib.parse.urlsplit(url)
+    try:
+        host, port = parts.hostname or "", parts.port
+    except ValueError:
+        host, port = parts.hostname or "", None
+    return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
+
+
 def spawn(argv):
     """Detach, so the app outlives this script and the daemon's timeout."""
     subprocess.Popen(argv, start_new_session=True,
@@ -158,8 +258,8 @@ def launch(entry_id):
 
 
 def usage():
-    print("usage: jarvis-open list | app <name> | url <https://...>",
-          file=sys.stderr)
+    print("usage: jarvis-open list | app <name> | url <https://...> "
+          "| bookmark <name>", file=sys.stderr)
     return 2
 
 
@@ -183,6 +283,26 @@ def main(argv):
             return 1
         launch(entry_id)
         print(f"launched {entry_id}")
+        return 0
+
+    if command == "bookmark":
+        if not rest:
+            return usage()
+        query = " ".join(rest)
+        hit = resolve_bookmark(query)
+        if hit is None:
+            print(f"no bookmark matches '{query}'", file=sys.stderr)
+            return 1
+        _, url = hit
+        # Checked in bookmarks() already. Checked again because this is the
+        # line that hands a string to the browser.
+        if not URL_RE.match(url):
+            print("refusing non-http(s) url", file=sys.stderr)
+            return 1
+        spawn(["xdg-open", url])
+        # The caller journals this line. A bookmark title is the speaker's
+        # own business, so it says where it went and not what it was called.
+        print(f"opened {origin_of(url)}")
         return 0
 
     if command == "url":

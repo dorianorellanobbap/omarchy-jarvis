@@ -128,7 +128,12 @@ ACTIONS_PROMPT = (
     "You cannot run commands, but you can ask Jarvis to open things. To open "
     "an installed app, add a line at the end of your reply of exactly this "
     "form: <<jarvis:open-app NAME>>. To open a web page in the browser: "
-    "<<jarvis:open-url URL>> (http or https only). To open several things at "
+    "<<jarvis:open-url URL>> (http or https only). To open one of the "
+    "speaker's Chromium bookmarks, name it: <<jarvis:open-bookmark NAME>>, "
+    "where NAME is roughly what they called it. You cannot see their "
+    "bookmarks and must never guess a URL for one; ask for it by name and "
+    "Jarvis will match it, or say you could not find it. To open several "
+    "things at "
     "once, write one line for each, up to three, in the order you want them "
     "opened. Never refuse a request just because it asks for more than one "
     "thing. The lines are stripped before your reply is spoken, so also say "
@@ -1051,8 +1056,10 @@ def clean_reply(text, strip_prefixes):
 # --------------------------------------------------------------------------
 
 DIRECTIVE_RE = re.compile(
-    r"^\s*<<jarvis:(open-app|open-url|search)\s+([^<>\n]{1,2048}?)\s*>>\s*$")
-_DIRECTIVE_KINDS = {"open-app": "app", "open-url": "url", "search": "search"}
+    r"^\s*<<jarvis:(open-app|open-url|open-bookmark|search)\s+"
+    r"([^<>\n]{1,2048}?)\s*>>\s*$")
+_DIRECTIVE_KINDS = {"open-app": "app", "open-url": "url",
+                    "open-bookmark": "bookmark", "search": "search"}
 # What we will pass the broker as an app query: printable, no leading dash,
 # short. The broker only fuzzy-matches it against installed .desktop names.
 APP_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")
@@ -1162,8 +1169,11 @@ def run_directives(directives):
 def run_directive(directive):
     """Validate one directive and exec the broker for it. True on success."""
     kind, value = directive
-    if kind == "app" and not APP_QUERY_RE.match(value):
-        log("directive refused: app name failed validation")
+    # A bookmark query is held to the same shape as an app name: it is a
+    # word or two someone said, and the broker only ever matches it against
+    # titles it read itself.
+    if kind in ("app", "bookmark") and not APP_QUERY_RE.match(value):
+        log(f"directive refused: {kind} name failed validation")
         return False
     if kind == "url" and not URL_RE.match(value):
         log("directive refused: not a plain http(s) url")

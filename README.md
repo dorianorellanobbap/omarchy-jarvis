@@ -178,6 +178,16 @@ Use `{outfile}` when the CLI prints progress logs to stdout, or
 grant. The agent asks by ending its reply with a `<<jarvis:open-… >>`
 directive line, and the daemon brokers it through `jarvis-open`. The CLI
 needs no tool support at all, and none of the presets pass any tool flags.
+Up to three directives per reply, so "open my music and a browser" is one
+request rather than two.
+
+Bookmarks from Chromium's default profile can be opened by name
+(`<<jarvis:open-bookmark NAME>>`). The agent never sees them: it passes on
+roughly what you called the thing, and `jarvis-open` does the matching
+locally against titles, then site names. So your bookmarks are not sent to
+whichever agent you configured, and only `http`/`https` ones can be opened at
+all -- a bookmark holding a `javascript:`, `file:` or `chrome:` URL is not
+matchable.
 
 `web_command` is the one exception, and it is opt-in: web search only works
 with a CLI that can grant a read-only search tool by flag (Claude Code can).
