@@ -51,9 +51,13 @@ by name, several at once. Your bookmarks are matched locally and never shown
 to the agent.
 
 **It can drive the desktop.** Switch workspaces, change the theme, set volume
-and brightness, out loud. Opt-in separately from opening things, every value
+and brightness, play, pause and skip what is playing, out loud. Opt-in separately from opening things, every value
 checked against a fixed list or a number range, and every one of them undone
 by saying the opposite.
+
+**Nothing is granted until you say so.** Switches in the panel turn opening
+things and desktop control on and off. The command Jarvis runs your agent
+with is never editable from the bar, by design.
 
 **Set up and tested from the bar.** One button installs it. Another tests your
 microphone and tells you in plain words whether your voice actually clears the
@@ -234,12 +238,14 @@ Use `{outfile}` when the CLI prints progress logs to stdout, or
 `strip_prefixes = ["INFO", "Loading"]` to drop noise lines. Then check it with
 `--agents` and `--ask`. **PRs adding a working preset are welcome.**
 
-`desktop = true` is the same machinery for the four desktop controls:
+`desktop = true` is the same machinery for the desktop controls:
 `<<jarvis:workspace N>>`, `<<jarvis:theme NAME>>`, `<<jarvis:volume V>>` and
 `<<jarvis:brightness V>>`. A workspace is a number from 1 to 10, volume and
 brightness are `up`, `down`, `mute` or a number 0 to 100, and a theme has to
 match one `omarchy-theme-list` actually reports, the same way an app has to
-match an installed `.desktop`. Nothing spoken becomes a command name, a flag
+match an installed `.desktop`. `<<jarvis:media V>>` covers play, pause,
+playpause, next and previous, spoken to whatever is playing over MPRIS on the
+session bus, through `busctl` so there is nothing extra to install. Nothing spoken becomes a command name, a flag
 or a path. It is a separate grant from `actions` because changing your volume
 is a different decision from launching applications.
 

@@ -88,6 +88,18 @@ else:
 check("a theme that is not installed is refused",
       jo.run_desktop("theme", "hacker green"), None)
 
+# Media is MPRIS over the session bus, so the only thing to pin down here is
+# which words are accepted. The bus names are read off the bus, never taken
+# from anything spoken.
+check("an unknown media action is refused", jo.run_media("eject"), False)
+ok = sorted(jo.MEDIA_METHODS) == ["next", "pause", "play", "playpause", "previous"]
+print(f"  {'PASS' if ok else 'FAIL'}  media accepts only the five transport words")
+results.append(ok)
+ok = all(jo.BUS_NAME_RE.match(n) for n in ["org.mpris.MediaPlayer2.cliamp"]) \
+    and not jo.BUS_NAME_RE.match("org.mpris.MediaPlayer2.x;reboot")
+print(f"  {'PASS' if ok else 'FAIL'}  a bus name with a shell fragment is rejected")
+results.append(ok)
+
 print()
 if all(results):
     print("all desktop tests passed")

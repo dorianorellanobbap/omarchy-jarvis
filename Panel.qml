@@ -42,6 +42,12 @@ Panel {
   property real maxCommand: 15.0
   property var voices: []
   property string voice: ""
+  // What the selected agent is allowed to do. Read back from the config on
+  // every load, so a switch shows what is actually granted rather than what
+  // was last clicked.
+  property bool grantActions: false
+  property bool grantDesktop: false
+
   property bool loaded: false
   property string errorText: ""
 
@@ -137,6 +143,16 @@ Panel {
     setProc.running = true
   }
 
+  // Grants go through `jarvis-config grant`, which only ever writes these two
+  // booleans and only for the agent in use. The command the daemon executes
+  // stays hand-edited: no switch here can change what gets run, only whether
+  // Jarvis's own broker will act on a request.
+  function setGrant(name, on) {
+    root.errorText = ""
+    grantProc.command = [root.helper, "grant", name, on ? "true" : "false"]
+    grantProc.running = true
+  }
+
   function runSetup() {
     root.setupLog = ""
     root.settingUp = true
@@ -175,6 +191,9 @@ Panel {
           root.wakeWords = d.wake_words || []
           root.voices = d.voices || []
           root.voice = d.voice || ""
+          var mine = (d.agents || []).filter(function(a) { return a.name === d.agent })
+          root.grantActions = mine.length > 0 && mine[0].actions === true
+          root.grantDesktop = mine.length > 0 && mine[0].desktop === true
           if (d.listen) {
             root.wakeThreshold = d.listen.wake_threshold
             root.silenceTail = d.listen.silence_tail
@@ -268,6 +287,24 @@ Panel {
       }
     }
     onExited: function(code) { root.micTesting = false }
+  }
+
+  Process {
+    id: grantProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var msg = String(text || "").replace(/^\[jarvis\].*$/gm, "").trim()
+        if (msg) root.errorText = msg
+      }
+    }
+    onExited: function(code) {
+      if (code === 0) root.onApplied()
+      else {
+        if (!root.errorText) root.errorText = "Could not change that permission."
+        root.load()
+      }
+    }
   }
 
   Process {
@@ -760,6 +797,99 @@ Panel {
               step: 5
               integer: true
               onReleased: function(v) { root.apply("listen.max_command", Math.round(v)) }
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.fg
+            visible: !root.needsSetup
+          }
+
+          // ------------------------------------------------------ permissions
+          PanelSectionHeader {
+            visible: !root.needsSetup
+            text: "WHAT IT MAY DO"
+            foreground: root.fg
+            fontFamily: root.fontFamily
+          }
+
+          Column {
+            width: parent.width
+            visible: !root.needsSetup
+            spacing: Style.space(12)
+
+            Repeater {
+              model: [
+                {
+                  key: "actions",
+                  title: "Open things",
+                  detail: "Launch apps, open web pages and your bookmarks.",
+                  on: root.grantActions
+                },
+                {
+                  key: "desktop",
+                  title: "Control the desktop",
+                  detail: "Switch workspace, change theme, volume, brightness, "
+                    + "and play or skip what is playing.",
+                  on: root.grantDesktop
+                }
+              ]
+
+              Item {
+                required property var modelData
+                width: parent.width
+                implicitHeight: Math.max(grantText.implicitHeight,
+                                         grantSwitch.implicitHeight)
+
+                Column {
+                  id: grantText
+                  anchors.left: parent.left
+                  anchors.right: grantSwitch.left
+                  anchors.rightMargin: Style.space(12)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(2)
+
+                  Text {
+                    width: parent.width
+                    text: modelData.title
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    width: parent.width
+                    text: modelData.detail
+                    color: Qt.darker(root.fg, 1.4)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                  }
+                }
+
+                ToggleSwitch {
+                  id: grantSwitch
+                  checked: modelData.on
+                  enabled: root.loaded
+                  foreground: root.fg
+                  accent: root.accent
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  onToggled: root.setGrant(modelData.key, !modelData.on)
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              // Worth saying next to the switches: they widen what Jarvis
+              // will act on, not what the agent CLI itself may touch.
+              text: "These control what Jarvis will do when the agent asks. "
+                + "The command Jarvis runs your agent with is not editable "
+                + "from here, by design."
+              color: Qt.darker(root.fg, 1.5)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 

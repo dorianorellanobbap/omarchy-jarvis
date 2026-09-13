@@ -83,10 +83,16 @@ case("desktop controls parse",
 case("a theme name with spaces survives",
      "<<jarvis:theme Catppuccin Latte>>", "", [("theme", "Catppuccin Latte")])
 
-# The kinds a desktop grant covers, and the ones it does not.
-ok = sorted(jl.DESKTOP_KINDS) == ["brightness", "theme", "volume", "workspace"]
-print(f"  {'PASS' if ok else 'FAIL'}  desktop kinds are only the four controls")
+# Exactly what the desktop grant covers. Pinned deliberately: adding a kind
+# here widens what one switch turns on, so it should be a decision rather
+# than something that happens quietly.
+ok = sorted(jl.DESKTOP_KINDS) == ["brightness", "media", "theme", "volume",
+                                  "workspace"]
+print(f"  {'PASS' if ok else 'FAIL'}  the desktop grant covers exactly five controls")
 results.append(ok)
+
+case("media parses as a desktop kind",
+     "<<jarvis:media playpause>>", "", [("media", "playpause")])
 
 print()
 if all(results):

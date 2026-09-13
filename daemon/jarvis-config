@@ -61,6 +61,21 @@ WRITABLE = {
 # instead of failing silently later.
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
+# The two grants a panel switch may flip, and the only keys under [agents.*]
+# this helper will ever write. Both are booleans that widen or narrow what
+# Jarvis's own broker will do; neither is part of the command the daemon
+# executes. `command`, `web_command` and `data_command` stay hand-edited,
+# because a GUI that can rewrite argv is a GUI that can be talked into
+# running something, and that has not changed.
+GRANTS = {
+    "actions": "open apps, pages and bookmarks",
+    "desktop": "workspace, theme, volume, brightness and media",
+}
+# An agent name is read from the config rather than from the caller, but it
+# becomes a table header on the way to the file, so it is held to a shape
+# that cannot carry a newline and open a section of someone else's choosing.
+AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
 
 def coerce(key, raw):
     kind = WRITABLE[key]
@@ -237,6 +252,7 @@ def cmd_show(daemon, args):
             continue
         agents.append({
             "name": name,
+            "desktop": agent.desktop,
             "actions": agent.actions,
             "web": agent.web,
             "installed": bool(__import__("shutil").which(agent.executable)),
@@ -394,6 +410,34 @@ def cmd_set(daemon, args):
     return 0
 
 
+def cmd_grant(daemon, args):
+    """Turn one grant on or off for the agent currently selected.
+
+    A separate command from `set` rather than more entries in WRITABLE, so
+    the caller never names a section: it says which grant, and the helper
+    works out whose it is. There is no spelling of this command that reaches
+    any other key under [agents.*].
+    """
+    if args.grant not in GRANTS:
+        raise SystemExit(f"{args.grant!r} is not a grant. "
+                         f"Grants: {', '.join(sorted(GRANTS))}")
+    if args.value not in ("true", "false"):
+        raise SystemExit("a grant is true or false")
+
+    cfg = daemon.load_config(args.config)
+    agent = cfg.get("agent", "claude")
+    if not AGENT_NAME_RE.match(str(agent)):
+        raise SystemExit(f"agent name {agent!r} is not one this can write to")
+    if agent not in cfg.get("agents", {}):
+        known = ", ".join(sorted(cfg.get("agents", {}))) or "none"
+        raise SystemExit(f"unknown agent {agent!r}. Configured: {known}")
+
+    value = args.value == "true"
+    result = set_key(args.config, f"agents.{agent}.{args.grant}", value)
+    print(f"{result} {agent}.{args.grant} = {format_value(value)}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(prog="jarvis-config")
     parser.add_argument("--config", default=CONFIG_PATH)
@@ -402,6 +446,9 @@ def main():
     setp = sub.add_parser("set", help="change one setting")
     setp.add_argument("key")
     setp.add_argument("value")
+    gp = sub.add_parser("grant", help="turn a grant on or off")
+    gp.add_argument("grant", choices=sorted(GRANTS))
+    gp.add_argument("value", choices=("true", "false"))
     iv = sub.add_parser("install-voice", help="download a piper voice")
     iv.add_argument("voice")
 
@@ -410,6 +457,7 @@ def main():
     return {
         "show": cmd_show,
         "set": cmd_set,
+        "grant": cmd_grant,
         "install-voice": cmd_install_voice,
     }[args.cmd](daemon, args)
 

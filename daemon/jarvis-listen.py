@@ -147,7 +147,7 @@ ACTIONS_PROMPT = (
 # happens. Every one of these is reversible by saying the opposite, none
 # touches a file, installs anything, or reaches the network.
 DESKTOP_PROMPT = (
-    "You can change four things about the desktop, each by adding a line at "
+    "You can change a few things about the desktop, each by adding a line at "
     "the end of your reply of exactly this form:\n"
     "<<jarvis:workspace N>> to switch to workspace N, 1 to 10.\n"
     "The speaker's words reach you through speech-to-text, which writes "
@@ -158,6 +158,9 @@ DESKTOP_PROMPT = (
     "<<jarvis:volume V>> where V is up, down, mute, or a number 0 to 100.\n"
     "<<jarvis:brightness V>> where V is up, down, or a number 0 to 100.\n"
     "<<jarvis:theme NAME>> to change the colour theme.{themes}\n"
+    "<<jarvis:media V>> where V is play, pause, playpause, next or previous, "
+    "for whatever is playing music or video. Use playpause when they just "
+    "say to pause or resume without naming which.\n"
     "Say briefly in your reply what you changed. If asked for anything else "
     "about the machine, say out loud that you cannot."
 )
@@ -1107,15 +1110,16 @@ def clean_reply(text, strip_prefixes):
 
 DIRECTIVE_RE = re.compile(
     r"^\s*<<jarvis:(open-app|open-url|open-bookmark|search"
-    r"|workspace|theme|volume|brightness)\s+"
+    r"|workspace|theme|volume|brightness|media)\s+"
     r"([^<>\n]{1,2048}?)\s*>>\s*$")
 _DIRECTIVE_KINDS = {"open-app": "app", "open-url": "url",
                     "open-bookmark": "bookmark", "search": "search",
                     "workspace": "workspace", "theme": "theme",
-                    "volume": "volume", "brightness": "brightness"}
+                    "volume": "volume", "brightness": "brightness",
+                    "media": "media"}
 # The ones the broker treats as desktop controls rather than as opening
 # something. Gated by `desktop`, not by `actions`.
-DESKTOP_KINDS = ("workspace", "theme", "volume", "brightness")
+DESKTOP_KINDS = ("workspace", "theme", "volume", "brightness", "media")
 # What we will pass the broker as an app query: printable, no leading dash,
 # short. The broker only fuzzy-matches it against installed .desktop names.
 APP_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")

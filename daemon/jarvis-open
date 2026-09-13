@@ -18,6 +18,7 @@ caller's.
     jarvis-open themes          every installed theme name
     jarvis-open volume <what>   up | down | mute | 0-100
     jarvis-open brightness <w>  up | down | 0-100
+    jarvis-open media <what>    play | pause | next | previous
 
 It used to be a shell script that ran `grep` over every path matching
 $HOME/.local/share/applications/*.desktop and buffered the whole generated
@@ -341,6 +342,82 @@ def run_desktop(command, value):
     return None
 
 
+# Media control speaks MPRIS over the session bus with busctl, which ships
+# with systemd, rather than depending on playerctl. One less thing for
+# someone to install, and the players are already there: anything that plays
+# audio on a desktop registers an org.mpris.MediaPlayer2.* name.
+MPRIS_PREFIX = "org.mpris.MediaPlayer2."
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_IFACE = "org.mpris.MediaPlayer2.Player"
+MEDIA_METHODS = {
+    "play": "Play",
+    "pause": "Pause",
+    "playpause": "PlayPause",
+    "next": "Next",
+    "previous": "Previous",
+}
+# A bus name, and nothing else. These are read off the bus rather than taken
+# from a caller, and this is what keeps it that way if that ever changes.
+BUS_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,255}$")
+
+
+def media_players():
+    """MPRIS bus names currently on the session bus, playing ones first.
+
+    A browser and a music player are often both registered, and the one
+    someone means is the one making noise.
+    """
+    try:
+        proc = subprocess.run(["busctl", "--user", "list", "--no-pager",
+                               "--no-legend"], capture_output=True, text=True,
+                              timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    names = []
+    for line in proc.stdout.splitlines():
+        name = line.split()[0] if line.split() else ""
+        if name.startswith(MPRIS_PREFIX) and BUS_NAME_RE.match(name):
+            names.append(name)
+    names.sort(key=lambda n: 0 if media_status(n) == "Playing" else 1)
+    return names
+
+
+def media_status(name):
+    """"Playing", "Paused", or "" if the player will not say."""
+    try:
+        proc = subprocess.run(["busctl", "--user", "get-property", name,
+                               MPRIS_PATH, MPRIS_IFACE, "PlaybackStatus"],
+                              capture_output=True, text=True, timeout=10,
+                              check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    # busctl prints: s "Playing"
+    parts = proc.stdout.strip().split('"')
+    return parts[1] if len(parts) > 1 else ""
+
+
+def run_media(action):
+    """Send one MPRIS method to the most relevant player. True on success."""
+    method = MEDIA_METHODS.get(action)
+    if method is None:
+        return False
+    for name in media_players():
+        try:
+            proc = subprocess.run(["busctl", "--user", "call", name,
+                                   MPRIS_PATH, MPRIS_IFACE, method],
+                                  capture_output=True, text=True, timeout=10,
+                                  check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0:
+            return True
+    return False
+
+
 def spawn(argv):
     """Detach, so the app outlives this script and the daemon's timeout."""
     subprocess.Popen(argv, start_new_session=True,
@@ -372,7 +449,8 @@ def launch(entry_id):
 def usage():
     print("usage: jarvis-open list | app <name> | url <https://...> "
           "| bookmark <name> | themes | workspace <n> | theme <name> "
-          "| volume <up|down|mute|0-100> | brightness <up|down|0-100>",
+          "| volume <up|down|mute|0-100> | brightness <up|down|0-100> "
+          "| media <play|pause|playpause|next|previous>",
           file=sys.stderr)
     return 2
 
@@ -402,6 +480,20 @@ def main(argv):
     if command == "themes":
         for name in theme_names():
             print(name)
+        return 0
+
+    if command == "media":
+        if len(rest) != 1 or rest[0] not in MEDIA_METHODS:
+            print("media takes one of: " + ", ".join(sorted(MEDIA_METHODS)),
+                  file=sys.stderr)
+            return 1
+        if not have("busctl"):
+            print("busctl is not installed", file=sys.stderr)
+            return 1
+        if not run_media(rest[0]):
+            print("no media player responded", file=sys.stderr)
+            return 1
+        print(f"media {rest[0]}")
         return 0
 
     if command in ("workspace", "theme", "volume", "brightness"):
