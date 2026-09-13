@@ -27,6 +27,6 @@ rm -rf "$JARVIS_DIR" "$PLUGIN_DIR"
 $purge && rm -rf "$CONFIG_DIR"
 
 echo
-echo "Removed. Take the Voice Assistant widget out of your bar layout"
+echo "Removed. Take the Jarvis widget out of your bar layout"
 echo "(Omarchy menu -> Setup -> Bar) if it is still there."
 $purge || echo "Your config is still at $CONFIG_DIR -- delete it or re-run with --purge."

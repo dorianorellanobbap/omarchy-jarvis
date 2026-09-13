@@ -309,7 +309,7 @@ Panel {
               spacing: Style.space(2)
 
               Text {
-                text: "Voice Assistant"
+                text: "Jarvis"
                 color: root.fg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title

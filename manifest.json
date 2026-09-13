@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "dorian.voice",
-  "name": "Voice Assistant",
+  "name": "Jarvis",
   "version": "1.0.0",
   "author": "Dorian",
   "description": "Wake-word voice assistant: ask a question out loud, hear the answer. Arm it from the bar.",
@@ -12,7 +12,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Voice Assistant",
+    "displayName": "Jarvis",
     "description": "Arm/disarm the wake-word listener and show what it is doing",
     "category": "System",
     "allowMultiple": false,

@@ -1,5 +1,7 @@
 # Jarvis: a wake-word voice assistant for the Omarchy bar
 
+![Jarvis: voice assistant for the Omarchy bar](preview.png)
+
 Say **"hey jarvis"**, ask a question, hear the answer. A bar widget arms and
 disarms the listener and shows what it is doing.
 
@@ -97,7 +99,7 @@ cd omarchy-jarvis && ./install.sh
 
 The script builds a Python venv, fetches and checksums the piper voice (63MB),
 installs a systemd **user** unit, writes a starter config, and verifies the
-result. It is idempotent, so re-run it any time. Then add the **Voice Assistant**
+result. It is idempotent, so re-run it any time. Then add the **Jarvis**
 widget to your bar and log out and back in.
 
 The unit is installed but **not enabled**: nothing holds the mic open until you

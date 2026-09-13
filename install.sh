@@ -158,7 +158,7 @@ cat <<DONE
 
 Done. Next:
 
-  1. Add the "Voice Assistant" widget to your bar (Omarchy menu ->
+  1. Add the "Jarvis" widget to your bar (Omarchy menu ->
      Setup -> Bar), then log out and back in.
   2. Arm it from the widget, or: systemctl --user start jarvis
   3. Say "hey jarvis", then ask something.
