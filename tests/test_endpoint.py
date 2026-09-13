@@ -19,6 +19,14 @@ spec = importlib.util.spec_from_file_location(
 jl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jl)
 
+# These exercise the loudness fallback, the path taken when the speech model
+# is not installed. Synthetic tones are not speech and the model says so
+# correctly, so leaving it enabled here would test the model against audio
+# nobody claims is a voice. tests/test_vad.py covers the model itself, with
+# real synthesised speech.
+jl._vad_tried = True
+jl._vad = None
+
 FRAME = jl.CHUNK_SAMPLES / jl.RATE          # 0.08s
 LISTEN = {"silence_tail": 1.2, "min_speech": 0.4, "max_command": 15.0}
 

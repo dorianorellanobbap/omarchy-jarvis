@@ -125,6 +125,26 @@ VOICE="$JARVIS_DIR/voices/en_US-amy-medium.onnx"
   || { echo "voice checksum mismatch -- delete $VOICE and re-run" >&2; exit 1; }
 echo "  -> $VOICE"
 
+# --- speech detector (2MB, not in the repo) --------------------------------
+say "Fetching the speech detector"
+VAD="$JARVIS_DIR/silero_vad.onnx"
+if [[ ! -f $VAD ]]; then
+  # Same discipline as put(): an unpredictably named private temp file in the
+  # destination directory, a ceiling on the transfer, verified before it is
+  # renamed into place. Downloading straight onto the final name would follow
+  # a planted symlink and write unverified bytes through it.
+  vad_tmp=$(mktemp -p "$JARVIS_DIR" '.jarvis.XXXXXXXX') || exit 1
+  curl -fsSL --max-filesize 20000000 --max-time 300 -o "$vad_tmp" \
+    https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx \
+    || { rm -f "$vad_tmp"; echo "could not download the speech detector" >&2; exit 1; }
+  chmod 644 "$vad_tmp"
+  mv -f "$vad_tmp" "$VAD"
+fi
+# Independent recheck of whatever is on disk, downloaded now or before.
+( cd "$JARVIS_DIR" && sha256sum -c "$SRC/daemon/silero-vad.sha256" >/dev/null ) \
+  || { echo "speech detector checksum mismatch -- delete $VAD and re-run" >&2; exit 1; }
+echo "  -> $VAD"
+
 # --- config ----------------------------------------------------------------
 say "Configuration"
 mkdir -p "$CONFIG_DIR"

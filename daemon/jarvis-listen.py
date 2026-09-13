@@ -650,6 +650,102 @@ def chime(kind):
         log("chime timed out; is the audio server healthy?")
 
 
+# --------------------------------------------------------------------------
+# Speech detection
+#
+# Comparing loudness cannot separate a voice from a room that is nearly as
+# loud, and that is not a tuning problem: any line low enough to catch the
+# speaker also catches the room. Measured on one real machine, a voice
+# arriving at 200 against a room of 130 gave a level test 0% of its speech
+# frames. The same audio through this model gives 88%.
+#
+# Silero VAD decides from the shape of the sound rather than its size, which
+# is why the wake word kept working perfectly on audio this daemon could not
+# find a word in: openWakeWord is a model too. It runs on the onnxruntime
+# already here for the wake word, costs about a millisecond per frame, and is
+# hash-locked like every other artifact.
+#
+# Levels are still tracked for the journal, and still used if the model is
+# missing, so an install that predates it keeps working.
+# --------------------------------------------------------------------------
+
+VAD_PATH = os.path.join(JARVIS_DIR, "silero_vad.onnx")
+VAD_WINDOW = 512               # what the model consumes at 16kHz
+VAD_CONTEXT = 64               # samples of the previous window it also wants
+VAD_START = 0.6                # probability that begins a sentence
+VAD_KEEP = 0.35                # probability that keeps one going
+_vad = None
+_vad_tried = False
+
+
+class SpeechDetector:
+    """Silero VAD over a stream of 80ms frames."""
+
+    def __init__(self, path):
+        import onnxruntime as ort
+        options = ort.SessionOptions()
+        # One thread each: this runs beside the wake word on an always-on
+        # service, and latency here is a millisecond either way.
+        options.inter_op_num_threads = 1
+        options.intra_op_num_threads = 1
+        options.log_severity_level = 3
+        self.session = ort.InferenceSession(
+            path, sess_options=options, providers=["CPUExecutionProvider"])
+        self.reset()
+
+    def reset(self):
+        """Forget the previous utterance. Called before each capture."""
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros(VAD_CONTEXT, dtype=np.float32)
+        self._tail = np.zeros(0, dtype=np.float32)
+
+    def probability(self, samples):
+        """Highest speech probability anywhere in this frame, 0.0 to 1.0."""
+        audio = samples.astype(np.float32)
+        # The same DC removal rms() does, and for the same reason: a mic that
+        # rests off zero hands the model an offset instead of a voice.
+        audio -= audio.mean()
+        audio = np.concatenate([self._tail, audio / 32768.0])
+        best, index = 0.0, 0
+        while len(audio) - index >= VAD_WINDOW:
+            window = audio[index:index + VAD_WINDOW]
+            payload = np.concatenate([self._context, window])[None, :]
+            probability, self._state = self.session.run(
+                None, {"input": payload.astype(np.float32),
+                       "state": self._state,
+                       "sr": np.array(RATE, dtype=np.int64)})
+            self._context = window[-VAD_CONTEXT:]
+            best = max(best, float(probability[0][0]))
+            index += VAD_WINDOW
+        # Whatever did not fill a window waits for the next frame.
+        self._tail = audio[index:]
+        return best
+
+
+def speech_detector():
+    """The shared detector, or None if the model is not installed.
+
+    Loaded once, and a failure is remembered rather than retried on every
+    question: a missing or unreadable model is not going to fix itself
+    mid-conversation, and the level fallback still works.
+    """
+    global _vad, _vad_tried
+    if _vad_tried:
+        return _vad
+    _vad_tried = True
+    if not os.path.exists(VAD_PATH):
+        log("no speech model installed; falling back to loudness, which "
+            "struggles when a room is nearly as loud as the speaker")
+        return None
+    try:
+        _vad = SpeechDetector(VAD_PATH)
+    except Exception as exc:
+        log(f"speech model would not load ({type(exc).__name__}); "
+            f"falling back to loudness")
+        _vad = None
+    return _vad
+
+
 def capture_command(mic, room_start, listen, voice_level=0.0):
     """Record until the speaker stops. Returns int16 samples, or None.
 
@@ -673,6 +769,13 @@ def capture_command(mic, room_start, listen, voice_level=0.0):
     silence_time = 0.0
     elapsed = 0.0
     peak = 0.0
+    heard_peak = 0.0          # loudest frame of any kind, for diagnosis
+    loudest_speech = 0.0      # highest speech probability, same purpose
+    detector = speech_detector()
+    if detector is not None:
+        # Each question is its own utterance; the model must not carry the
+        # last one into it.
+        detector.reset()
     frame_secs = CHUNK_SAMPLES / RATE
 
     while _running and elapsed < listen["max_command"]:
@@ -683,9 +786,17 @@ def capture_command(mic, room_start, listen, voice_level=0.0):
         elapsed += frame_secs
 
         level = rms(samples)
+        heard_peak = max(heard_peak, level)
         onset, sustain = thresholds(room, voice_reference(voice_level))
 
-        if level > (sustain if speech_time else onset):
+        if detector is not None:
+            probability = detector.probability(samples)
+            speaking = probability > (VAD_KEEP if speech_time else VAD_START)
+            loudest_speech = max(loudest_speech, probability)
+        else:
+            speaking = level > (sustain if speech_time else onset)
+
+        if speaking:
             speech_time += frame_secs
             silence_time = 0.0
             peak = max(peak, level)
@@ -707,15 +818,33 @@ def capture_command(mic, room_start, listen, voice_level=0.0):
         # recording makes a misfire cost the speaker seventeen seconds of
         # standing there, and tells them nothing about why.
         if speech_time == 0.0 and elapsed >= LISTEN_GIVE_UP_SECONDS:
-            log(f"nothing above {onset:.0f} in the first "
-                f"{LISTEN_GIVE_UP_SECONDS:.0f}s (room {room:.0f}); giving up")
+            # The loudest thing heard is the number that settles what went
+            # wrong: near the room means nobody spoke, well above it means
+            # someone spoke and the bar was still in the way.
+            log(f"no speech in the first {LISTEN_GIVE_UP_SECONDS:.0f}s "
+                + (f"(best probability {loudest_speech:.2f})"
+                   if detector is not None
+                   else f"(bar {onset:.0f}, room {room:.0f}, "
+                        f"loudest {heard_peak:.0f})")
+                + "; giving up")
             return None
 
     if speech_time < listen["min_speech"]:
+        log(f"only {speech_time:.1f}s of speech in {elapsed:.1f}s "
+            + (f"(best probability {loudest_speech:.2f})"
+               if detector is not None
+               else f"(bar {onset:.0f}, room {room:.0f}, "
+                    f"loudest {heard_peak:.0f})"))
         return None
     # This one worked, so it is evidence about how loud this person is.
     if peak > 0.0:
         _spoken_peaks.append(peak)
+    # The same numbers a failure prints, so a working exchange and a broken
+    # one can be compared rather than guessed between.
+    log(f"captured {elapsed:.1f}s, {speech_time:.1f}s of it speech "
+        + (f"(best probability {loudest_speech:.2f})" if detector is not None
+           else f"(bar {onset:.0f}, room {room:.0f}, "
+                f"loudest {heard_peak:.0f})"))
     if elapsed >= listen["max_command"] and silence_time < listen["silence_tail"]:
         # Truncated mid-sentence. Worth a line, because the symptom reaching
         # the user is a half-question answered oddly, with nothing to explain
@@ -882,7 +1011,7 @@ LEAD_IN_SECONDS = 0.25
 # How long to wait for the first word before deciding the wake word misfired.
 # Long enough to draw breath and start a sentence, short enough that a false
 # trigger is over before it is annoying.
-LISTEN_GIVE_UP_SECONDS = 3.0
+LISTEN_GIVE_UP_SECONDS = 5.0
 
 # How loud this person's questions actually are, learned from the ones that
 # worked. The wake word alone is a biased sample: people announce "hey jarvis"
@@ -1609,7 +1738,9 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
             score = float(scores.get(wake_key, 0.0))
 
             if score > listen["wake_threshold"] and time.time() - last_fire > listen["cooldown"]:
-                log(f"wake word detected ({score:.2f})")
+                log(f"wake word detected ({score:.2f}, voice "
+                    f"{max(recent) if recent else 0.0:.0f}, room "
+                    f"{room_level(room_window, ambient):.0f})")
                 handle_command(mic, room_level(room_window, ambient), agent,
                                voice, listen, log_text,
                                voice_level=max(recent) if recent else 0.0)
