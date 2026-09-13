@@ -587,8 +587,23 @@ def chime(kind):
 
 
 def capture_command(mic, ambient, listen):
-    """Record until the speaker stops. Returns int16 samples, or None."""
-    threshold = max(ambient * 3.0, 300.0)
+    """Record until the speaker stops. Returns int16 samples, or None.
+
+    Two thresholds, not one. Speech is not uniformly loud: unvoiced
+    consonants and the tail end of a word routinely fall below the level
+    that started the sentence, and a single comparison scores those the
+    same as an empty room, which is how a listener ends up thinking while
+    you are still talking. Starting to speak has to clear `onset`, but
+    staying in the sentence only has to clear `sustain`, so the quiet parts
+    of a question stay inside it.
+
+    The floor also keeps adapting while we record. It used to be frozen at
+    whatever the room measured when the wake word fired, so one noisy
+    instant just before you spoke set the bar too high for everything after
+    it. Quiet frames pull it down quickly and push it up slowly, so a long
+    question cannot drag the bar up behind itself and cut off its own end.
+    """
+    floor = max(ambient, 1.0)
     frames = []
     speech_time = 0.0
     silence_time = 0.0
@@ -602,16 +617,34 @@ def capture_command(mic, ambient, listen):
         frames.append(samples)
         elapsed += frame_secs
 
-        if rms(samples) > threshold:
+        level = rms(samples)
+        if level < floor:
+            # Downward on every frame, including ones we are calling speech.
+            # A stale room level, left over from a noisy moment before the
+            # wake word, otherwise holds the bar above the speaker for the
+            # whole question and nothing ever counts as talking.
+            floor = floor * 0.9 + level * 0.1
+        onset = max(floor * 3.0, 300.0)
+        sustain = max(floor * 1.5, 150.0)
+
+        if level > (sustain if speech_time else onset):
             speech_time += frame_secs
             silence_time = 0.0
-        else:
-            silence_time += frame_secs
-            if speech_time >= listen["min_speech"] and silence_time >= listen["silence_tail"]:
-                break
+            continue
+
+        silence_time += frame_secs
+        floor = floor * 0.995 + level * 0.005
+        if speech_time >= listen["min_speech"] and silence_time >= listen["silence_tail"]:
+            break
 
     if speech_time < listen["min_speech"]:
         return None
+    if elapsed >= listen["max_command"] and silence_time < listen["silence_tail"]:
+        # Truncated mid-sentence. Worth a line, because the symptom reaching
+        # the user is a half-question answered oddly, with nothing to explain
+        # it, and max_command is a setting they can raise.
+        log(f"hit the {listen['max_command']:.0f}s ceiling while you were "
+            f"still talking; raise max_command if questions get cut off")
     return np.concatenate(frames)
 
 
