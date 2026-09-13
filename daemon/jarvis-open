@@ -286,37 +286,56 @@ def resolve_theme(query):
 
 
 def run_desktop(command, value):
-    """One desktop control. Returns (argv, spoken_result) or None if invalid."""
+    """One desktop control.
+
+    Returns (attempts, spoken_result), where attempts is a list of argument
+    lists to try in order until one succeeds, or None if the value is not one
+    this control accepts.
+
+    More than one attempt exists because Hyprland changed how `hyprctl
+    dispatch` parses its arguments: current versions read a Lua expression
+    and older ones read a dispatcher name followed by words. Neither form
+    works on the other, and a plugin someone installs has no say in which
+    version they run, so both are tried.
+    """
     if command == "workspace":
         if not WORKSPACE_RE.match(value):
             return None
-        return ["hyprctl", "dispatch", "workspace", value], f"workspace {value}"
+        # value is digits only, checked directly above, so it cannot carry
+        # anything into the Lua string but the number it is.
+        return ([["hyprctl", "dispatch",
+                  'hl.dsp.focus({workspace="%s"})' % value],
+                 ["hyprctl", "dispatch", "workspace", value]],
+                f"workspace {value}")
 
     if command == "theme":
         name = resolve_theme(value)
         if name is None:
             return None
-        return ["omarchy-theme-set", name], f"theme {name}"
+        return [["omarchy-theme-set", name]], f"theme {name}"
 
     if command == "volume":
         if value == "mute":
-            return ["omarchy-audio-output-volume", "mute-toggle"], "mute toggled"
+            return ([["omarchy-audio-output-volume", "mute-toggle"]],
+                    "mute toggled")
         if value in DIRECTIONS:
             action = "raise" if value == "up" else "lower"
-            return ["omarchy-audio-output-volume", action], f"volume {value}"
+            return ([["omarchy-audio-output-volume", action]], f"volume {value}")
         if LEVEL_RE.match(value):
             # omarchy's volume command is relative only, so an absolute level
             # goes through wpctl. Still one fixed argv with a checked number.
-            return (["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", value + "%"],
-                    f"volume {value}%")
+            return ([["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@",
+                      value + "%"]], f"volume {value}%")
         return None
 
     if command == "brightness":
         if value in DIRECTIONS:
             step = "+10%" if value == "up" else "10%-"
-            return ["omarchy-brightness-display", step], f"brightness {value}"
+            return ([["omarchy-brightness-display", step]],
+                    f"brightness {value}")
         if LEVEL_RE.match(value):
-            return ["omarchy-brightness-display", value + "%"], f"brightness {value}%"
+            return ([["omarchy-brightness-display", value + "%"]],
+                    f"brightness {value}%")
         return None
 
     return None
@@ -393,13 +412,30 @@ def main(argv):
         if resolved is None:
             print(f"refusing '{command} {value}'", file=sys.stderr)
             return 1
-        argv_out, said = resolved
-        if not have(argv_out[0]):
-            print(f"{argv_out[0]} is not installed", file=sys.stderr)
+        attempts, said = resolved
+        if not have(attempts[0][0]):
+            print(f"{attempts[0][0]} is not installed", file=sys.stderr)
             return 1
-        spawn(argv_out)
-        print(f"set {said}")
-        return 0
+        # Waited on, unlike launching an app. These finish in moments, and a
+        # caller that does not check has no way to tell a change that happened
+        # from one that failed: `hyprctl dispatch` exits 7 on a syntax it no
+        # longer accepts, and reporting that as done is how the assistant ends
+        # up saying "switching to workspace two" while nothing moves.
+        last = None
+        for argv_out in attempts:
+            try:
+                last = subprocess.run(argv_out, capture_output=True, text=True,
+                                      timeout=15, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"{argv_out[0]} did not run: {exc}", file=sys.stderr)
+                return 1
+            if last.returncode == 0:
+                print(f"set {said}")
+                return 0
+        detail = (last.stderr or last.stdout or "").strip().splitlines()
+        print(f"{attempts[0][0]} refused: {detail[0] if detail else 'no reason given'}",
+              file=sys.stderr)
+        return 1
 
     if command == "bookmark":
         if not rest:

@@ -150,6 +150,11 @@ DESKTOP_PROMPT = (
     "You can change four things about the desktop, each by adding a line at "
     "the end of your reply of exactly this form:\n"
     "<<jarvis:workspace N>> to switch to workspace N, 1 to 10.\n"
+    "The speaker's words reach you through speech-to-text, which writes "
+    "spoken numbers as the words that sound like them: 'to' and 'too' are 2, "
+    "'for' and 'fore' are 4, 'won' is 1, 'ate' is 8, 'tree' is 3. Read the "
+    "number they meant and act on it. Never ask which number they wanted "
+    "when the sentence already contains one in any form.\n"
     "<<jarvis:volume V>> where V is up, down, mute, or a number 0 to 100.\n"
     "<<jarvis:brightness V>> where V is up, down, or a number 0 to 100.\n"
     "<<jarvis:theme NAME>> to change the colour theme.{themes}\n"
@@ -446,7 +451,15 @@ def capability_label(agent):
         return "CLI tools granted"
     if posture == TOOLS_UNKNOWN:
         return "tools not verified"
-    return "can act" if agent.actions else "answer-only"
+    # Both grants get named, and "answer-only" survives only when neither is
+    # on. A label that quietly omits a grant is the same defect as one that
+    # claims a safety property the argv does not have.
+    granted = []
+    if agent.actions:
+        granted.append("can act")
+    if agent.desktop:
+        granted.append("desktop controls")
+    return ", ".join(granted) if granted else "answer-only"
 
 
 def select_agent(cfg):
@@ -822,12 +835,23 @@ def report_mic(quiet, spoken=None):
     return ok
 
 
+# Recording starts the instant the wake word lands, so the first word begins
+# at sample zero with no run-up. Whisper transcribes that badly: it routinely
+# drops or mangles a word with no silence in front of it, which is why "switch
+# to workspace two" came back as "to workspace too". A short lead-in of
+# silence costs a quarter second of file and gives the model somewhere to
+# start.
+LEAD_IN_SECONDS = 0.25
+
+
 def write_wav(samples, path):
     # Centre it for the same reason rms() does. A mic resting at -2800 spends
     # 9% of its headroom on an offset the transcriber has no use for.
     samples = samples.astype(np.float32)
     samples -= samples.mean()
     samples = np.clip(samples, -32768, 32767).astype(np.int16)
+    samples = np.concatenate(
+        [np.zeros(int(LEAD_IN_SECONDS * RATE), dtype=np.int16), samples])
     with wave.open(path, "wb") as fh:
         fh.setnchannels(1)
         fh.setsampwidth(2)

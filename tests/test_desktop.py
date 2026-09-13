@@ -35,24 +35,27 @@ def check(name, got, want):
 
 
 # Every accepted value lands in one slot of a fixed argument list.
-check("a workspace becomes one hyprctl argument",
+# Two forms are offered because Hyprland changed how dispatch parses its
+# arguments; the broker tries them in order and checks the exit code.
+check("a workspace offers both hyprctl dispatch forms",
       jo.run_desktop("workspace", "3"),
-      (["hyprctl", "dispatch", "workspace", "3"], "workspace 3"))
+      ([["hyprctl", "dispatch", 'hl.dsp.focus({workspace="3"})'],
+        ["hyprctl", "dispatch", "workspace", "3"]], "workspace 3"))
 check("volume up is a named action, not a number",
       jo.run_desktop("volume", "up"),
-      (["omarchy-audio-output-volume", "raise"], "volume up"))
+      ([["omarchy-audio-output-volume", "raise"]], "volume up"))
 check("mute toggles",
       jo.run_desktop("volume", "mute"),
-      (["omarchy-audio-output-volume", "mute-toggle"], "mute toggled"))
+      ([["omarchy-audio-output-volume", "mute-toggle"]], "mute toggled"))
 check("an absolute volume goes through wpctl",
       jo.run_desktop("volume", "40"),
-      (["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "40%"], "volume 40%"))
+      ([["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "40%"]], "volume 40%"))
 check("brightness down is a relative step",
       jo.run_desktop("brightness", "down"),
-      (["omarchy-brightness-display", "10%-"], "brightness down"))
+      ([["omarchy-brightness-display", "10%-"]], "brightness down"))
 check("an absolute brightness is a percentage",
       jo.run_desktop("brightness", "55"),
-      (["omarchy-brightness-display", "55%"], "brightness 55%"))
+      ([["omarchy-brightness-display", "55%"]], "brightness 55%"))
 
 # Anything that is not an expected value is refused rather than passed on.
 # None of these can reach a shell even if they were accepted, because every
@@ -75,8 +78,8 @@ installed = jo.theme_names()
 if installed:
     partial = installed[0].split()[0][:4].lower()
     hit = jo.run_desktop("theme", partial)
-    ok = hit is not None and hit[0][0] == "omarchy-theme-set" \
-        and hit[0][1] in installed
+    ok = hit is not None and hit[0][0][0] == "omarchy-theme-set" \
+        and hit[0][0][1] in installed
     print(f"  {'PASS' if ok else 'FAIL'}  a partial theme name resolves to an "
           f"installed one")
     results.append(ok)
