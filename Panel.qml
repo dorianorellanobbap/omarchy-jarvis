@@ -45,6 +45,22 @@ Panel {
   property bool loaded: false
   property string errorText: ""
 
+  // `omarchy plugin add` puts this panel in the bar, but the daemon behind it
+  // is a Python service that has to be built on the machine. So the first
+  // thing a new user sees is a settings panel for something not installed
+  // yet, and the old answer was an error naming a helper they have never
+  // heard of. needsSetup turns that moment into the setup instead.
+  property bool needsSetup: false
+  property bool settingUp: false
+  property string setupLog: ""
+
+  // Whether a microphone works is invisible until someone talks to it: muted,
+  // turned down, or resting off zero all look exactly like a wake word that
+  // will not fire. The daemon can measure every bit of that, so the panel
+  // offers it rather than leaving it in a terminal command.
+  property bool micTesting: false
+  property string micLog: ""
+
   // A voice is ~63MB, so selecting one that is not on disk yet downloads it
   // first. The dropdown locks while that runs.
   property bool installingVoice: false
@@ -121,6 +137,20 @@ Panel {
     setProc.running = true
   }
 
+  function runSetup() {
+    root.setupLog = ""
+    root.settingUp = true
+    setupProc.command = ["bash", root.pluginDir + "/install.sh"]
+    setupProc.running = true
+  }
+
+  function runMicTest() {
+    root.micLog = ""
+    root.micTesting = true
+    micProc.command = [root.venvPython, root.listener, "--mic"]
+    micProc.running = true
+  }
+
   function onApplied() {
     load()
     if (armed) {
@@ -157,7 +187,12 @@ Panel {
       }
     }
     onExited: function(code) {
-      if (code !== 0) root.errorText = "jarvis-config failed (exit " + code + ")"
+      // Before anything has ever loaded, a failing helper is not an error to
+      // report, it is a machine that has not been set up yet. After a
+      // successful load it is a real failure and says so.
+      if (code === 0) return
+      if (!root.loaded) root.needsSetup = true
+      else root.errorText = "jarvis-config failed (exit " + code + ")"
     }
   }
 
@@ -196,6 +231,43 @@ Panel {
       }
       root.pendingVoice = ""
     }
+  }
+
+  // install.sh is the same script the README tells people to run. It is
+  // idempotent and needs no privileges: it builds the venv, fetches the
+  // checksummed voice, writes a starter config and installs the user unit.
+  // Anything that would need sudo it refuses to do and prints instead, which
+  // is why its output is shown here rather than swallowed.
+  Process {
+    id: setupProc
+    stdout: SplitParser { onRead: function(line) { root.setupLog += line + "\n" } }
+    stderr: SplitParser { onRead: function(line) { root.setupLog += line + "\n" } }
+    onExited: function(code) {
+      root.settingUp = false
+      if (code === 0) {
+        root.needsSetup = false
+        root.setupLog += "\nDone. Jarvis is installed.\n"
+        root.load()
+      } else {
+        root.setupLog += "\nSetup stopped (exit " + code + "). "
+          + "The lines above say what it needed.\n"
+      }
+    }
+  }
+
+  // --mic speaks its own prompts ("say nothing", "now say something"), so its
+  // output is streamed line by line: the panel has to read as the
+  // instructions arrive, not all at once when it is over.
+  Process {
+    id: micProc
+    stdout: SplitParser { onRead: function(line) { root.micLog += line + "\n" } }
+    stderr: SplitParser {
+      onRead: function(line) {
+        // The daemon's own [jarvis] chatter is not part of the answer.
+        if (!/^\[jarvis\]/.test(String(line))) root.micLog += line + "\n"
+      }
+    }
+    onExited: function(code) { root.micTesting = false }
   }
 
   Process {
@@ -370,6 +442,68 @@ Panel {
             }
           }
 
+          // ----------------------------------------------------------- setup
+          BorderSurface {
+            width: parent.width
+            visible: root.needsSetup
+            implicitHeight: setupCol.implicitHeight + Style.space(20)
+            radius: Style.cornerRadius
+            color: Style.normalFillFor(root.fg, root.accent)
+            borderSpec: Border.controlSpec("hover-cursor", root.fg, root.accent)
+
+            Column {
+              id: setupCol
+              anchors.centerIn: parent
+              width: parent.width - Style.space(20)
+              spacing: Style.space(10)
+
+              Text {
+                width: parent.width
+                text: "Jarvis is not set up on this machine yet"
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                width: parent.width
+                // Said plainly and up front, because it is a 63MB download
+                // and an always-on microphone, and neither should be a
+                // surprise that happens after a button press.
+                text: "This builds the listener, downloads a 63MB voice and "
+                  + "installs a background service. It does not need your "
+                  + "password, and nothing listens until you arm it."
+                color: Qt.darker(root.fg, 1.4)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Button {
+                width: parent.width
+                text: root.settingUp ? "Setting up..." : "Set up Jarvis"
+                iconText: "󰐗"
+                bordered: true
+                foreground: root.fg
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                enabled: !root.settingUp
+                onClicked: root.runSetup()
+              }
+
+              LogView {
+                width: parent.width
+                visible: root.setupLog !== ""
+                text: root.setupLog
+                foreground: root.fg
+                fontFamily: root.fontFamily
+              }
+            }
+          }
+
           BorderSurface {
             width: parent.width
             visible: root.errorText !== ""
@@ -391,10 +525,14 @@ Panel {
             }
           }
 
-          PanelSeparator { foreground: root.fg }
+          PanelSeparator {
+            foreground: root.fg
+            visible: !root.needsSetup
+          }
 
           // -------------------------------------------------------- behaviour
           PanelSectionHeader {
+            visible: !root.needsSetup
             text: "ASSISTANT"
             foreground: root.fg
             fontFamily: root.fontFamily
@@ -625,10 +763,48 @@ Panel {
             }
           }
 
-          PanelSeparator { foreground: root.fg }
+          PanelSeparator {
+            foreground: root.fg
+            visible: !root.needsSetup
+          }
+
+          // ------------------------------------------------------- microphone
+          Column {
+            width: parent.width
+            visible: !root.needsSetup
+            spacing: Style.space(8)
+
+            Button {
+              width: parent.width
+              text: root.micTesting ? "Listening..." : "Test microphone"
+              iconText: "󰍬"
+              bordered: true
+              foreground: root.fg
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              enabled: !root.micTesting
+              onClicked: root.runMicTest()
+            }
+
+            LogView {
+              width: parent.width
+              visible: root.micLog !== ""
+              text: root.micLog
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              maxHeight: 150
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.fg
+            visible: !root.needsSetup
+          }
 
           Row {
             width: parent.width
+            visible: !root.needsSetup
             spacing: Style.space(8)
 
             Button {
@@ -672,6 +848,7 @@ Panel {
 
           Text {
             width: parent.width
+            visible: !root.needsSetup
             text: "Everything else (adding an agent, the voice) lives in the config file."
             color: Qt.darker(root.fg, 1.4)
             font.family: root.fontFamily
@@ -691,4 +868,13 @@ Panel {
   // helper has to run under the venv's interpreter.
   readonly property string helper:
     Quickshell.env("HOME") + "/.local/share/jarvis/bin/jarvis-config"
+
+  // This file's own directory is the plugin directory, wherever the plugin
+  // happens to be installed, so the installer is found without guessing.
+  readonly property string pluginDir:
+    String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
+  readonly property string venvPython:
+    Quickshell.env("HOME") + "/.local/share/jarvis/venv/bin/python"
+  readonly property string listener:
+    Quickshell.env("HOME") + "/.local/share/jarvis/jarvis-listen.py"
 }

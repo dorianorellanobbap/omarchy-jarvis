@@ -52,6 +52,7 @@ if [[ $SRC != "$PLUGIN_DIR" ]]; then
   put 644 "$SRC/manifest.json" "$PLUGIN_DIR/manifest.json"
   put 644 "$SRC/BarWidget.qml" "$PLUGIN_DIR/BarWidget.qml"
   put 644 "$SRC/Panel.qml"     "$PLUGIN_DIR/Panel.qml"
+  put 644 "$SRC/LogView.qml"   "$PLUGIN_DIR/LogView.qml"
   echo "  -> $PLUGIN_DIR"
 fi
 
