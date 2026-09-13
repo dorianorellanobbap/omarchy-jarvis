@@ -50,7 +50,7 @@ def check(name, got, want):
 profile = {"roots": {
     "bookmark_bar": {"type": "folder", "children": [
         bookmark("My Bank", "https://bank.example.com/login"),
-        bookmark("Pallet Quotes", "http://quotes.internal/list"),
+        bookmark("Team Wiki", "http://wiki.internal/start"),
         {"type": "folder", "children": [
             bookmark("Buried", "https://deep.example.com/"),
         ]},
@@ -69,7 +69,7 @@ write_profile(profile)
 titles = [t for t, _ in jo.bookmarks()]
 check("only http(s) bookmarks are kept",
       sorted(titles),
-      sorted(["My Bank", "Pallet Quotes", "Buried", "Odd Codes"]))
+      sorted(["My Bank", "Team Wiki", "Buried", "Odd Codes"]))
 
 check("a javascript: bookmark cannot be resolved",
       jo.resolve_bookmark("run this"), None)
@@ -88,8 +88,8 @@ check("part of a title matches",
 check("a folder does not hide a bookmark",
       jo.resolve_bookmark("buried"), ("Buried", "https://deep.example.com/"))
 check("the host matches when the title does not",
-      jo.resolve_bookmark("quotes.internal"),
-      ("Pallet Quotes", "http://quotes.internal/list"))
+      jo.resolve_bookmark("wiki.internal"),
+      ("Team Wiki", "http://wiki.internal/start"))
 check("nothing matches nothing",
       jo.resolve_bookmark("a bookmark that is not there"), None)
 check("an empty query matches nothing", jo.resolve_bookmark("   "), None)

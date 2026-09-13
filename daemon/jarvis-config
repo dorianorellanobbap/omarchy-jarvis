@@ -64,7 +64,8 @@ CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 # The two grants a panel switch may flip, and the only keys under [agents.*]
 # this helper will ever write. Both are booleans that widen or narrow what
 # Jarvis's own broker will do; neither is part of the command the daemon
-# executes. `command`, `web_command` and `data_command` stay hand-edited,
+# executes. `command` and `web_command`, and any other argv a config defines,
+# stay hand-edited,
 # because a GUI that can rewrite argv is a GUI that can be talked into
 # running something, and that has not changed.
 GRANTS = {
