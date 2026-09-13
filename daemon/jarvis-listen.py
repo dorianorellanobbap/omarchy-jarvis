@@ -650,7 +650,7 @@ def chime(kind):
         log("chime timed out; is the audio server healthy?")
 
 
-def capture_command(mic, ambient, listen):
+def capture_command(mic, ambient, listen, voice_level=0.0):
     """Record until the speaker stops. Returns int16 samples, or None.
 
     Two thresholds, not one. Speech is not uniformly loud: unvoiced
@@ -688,7 +688,7 @@ def capture_command(mic, ambient, listen):
             # wake word, otherwise holds the bar above the speaker for the
             # whole question and nothing ever counts as talking.
             floor = floor * 0.9 + level * 0.1
-        onset, sustain = thresholds(floor)
+        onset, sustain = thresholds(floor, voice_level)
 
         if level > (sustain if speech_time else onset):
             speech_time += frame_secs
@@ -699,6 +699,13 @@ def capture_command(mic, ambient, listen):
         floor = floor * 0.995 + level * 0.005
         if speech_time >= listen["min_speech"] and silence_time >= listen["silence_tail"]:
             break
+        # Nobody started talking. Waiting out max_command to then discard the
+        # recording makes a misfire cost the speaker seventeen seconds of
+        # standing there, and tells them nothing about why.
+        if speech_time == 0.0 and elapsed >= LISTEN_GIVE_UP_SECONDS:
+            log(f"nothing above {onset:.0f} in the first "
+                f"{LISTEN_GIVE_UP_SECONDS:.0f}s (room {floor:.0f}); giving up")
+            return None
 
     if speech_time < listen["min_speech"]:
         return None
@@ -711,24 +718,34 @@ def capture_command(mic, ambient, listen):
     return np.concatenate(frames)
 
 
-def thresholds(floor):
+def thresholds(floor, voice_level=0.0):
     """Levels that separate talking from not, for a room measured at `floor`.
 
     Both are multiples of the room, never fixed levels, because the numbers a
     microphone reports are not a physical unit: they scale with input gain,
     with the hardware, and with the driver. The same voice in the same room
-    measured 326 at 50% input volume and about three times that at 70%. A
-    fixed bar of 300 is six times the room on one setting and sixteen on
-    another, and on a quieter mic it is simply unreachable, so someone speaks
-    normally and is never heard while their signal is perfectly good.
+    measured 326 at 50% input volume and about three times that at 70%.
 
-    Onset is deliberately well above sustain. Starting a sentence should take
-    a clear voice; staying in one should survive the quiet parts of a word.
-    The small absolute guards only matter when the floor is near zero, where
-    a pure multiple would make every rustle count as speech and the question
-    would never end.
+    `voice_level` is how loud the wake word was, which is this speaker, in
+    this room, a second ago. It is worth more than any ratio we could pick:
+    a fixed multiple of the room is a guess about how far above it someone
+    ought to be, and in a louder room that guess put the bar over the
+    speaker's head, so nothing counted as talking, the recorder ran to
+    max_command every time and then threw the recording away.
+
+    So the bar goes under the voice actually heard, held between a floor it
+    must clear to not be the room, and a ceiling so one shouted wake word
+    cannot make an ordinary sentence inaudible. Sustain sits below onset for
+    the usual reason: starting a sentence should take a clear voice, staying
+    in one should survive its quiet parts.
     """
-    return max(floor * 5.0, 40.0), max(floor * 2.0, 20.0)
+    if voice_level <= 0.0:
+        onset = max(floor * 5.0, 40.0)
+        return onset, max(floor * 2.0, 20.0)
+    onset = min(max(voice_level * 0.35, floor * 1.2), max(floor * 5.0, 40.0))
+    onset = max(onset, 40.0)
+    sustain = min(max(onset * 0.5, floor * 1.05), onset * 0.9)
+    return onset, max(sustain, 20.0)
 
 
 def sample_mic(seconds):
@@ -845,6 +862,11 @@ def report_mic(quiet, spoken=None):
 # silence costs a quarter second of file and gives the model somewhere to
 # start.
 LEAD_IN_SECONDS = 0.25
+
+# How long to wait for the first word before deciding the wake word misfired.
+# Long enough to draw breath and start a sentence, short enough that a false
+# trigger is over before it is annoying.
+LISTEN_GIVE_UP_SECONDS = 3.0
 
 
 def write_wav(samples, path):
@@ -1452,10 +1474,11 @@ def respond(agent, voice, text, log_text=False):
     return answer
 
 
-def handle_command(mic, ambient, agent, voice, listen, log_text=False):
+def handle_command(mic, ambient, agent, voice, listen, log_text=False,
+                   voice_level=0.0):
     chime("start")
     set_state("listening")
-    samples = capture_command(mic, ambient, listen)
+    samples = capture_command(mic, ambient, listen, voice_level)
     if samples is None:
         log("nothing said")
         return
@@ -1506,6 +1529,9 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
     # standing there testing whether it works.
     ambient = None
     last_fire = 0.0
+    # About a second and a half of levels: long enough to hold a wake word,
+    # short enough that it is this utterance and not an old one.
+    recent = collections.deque(maxlen=int(1.5 * RATE / CHUNK_SAMPLES))
 
     try:
         while _running:
@@ -1519,6 +1545,13 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
                 continue
 
             level = rms(samples)
+            # The wake word is a sample of this speaker's voice, in this
+            # room, a moment ago. Keeping the loudest recent frames means the
+            # recorder can set its bar from a voice it has actually heard
+            # rather than from a guess about how far above the room someone
+            # ought to be.
+            recent.append(level)
+
             # Rolling floor, ignoring anything loud enough to be a voice.
             # Falls fast and rises slowly: a room that goes quiet should be
             # believed within a second, while a room that gets loud should
@@ -1534,7 +1567,8 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
 
             if score > listen["wake_threshold"] and time.time() - last_fire > listen["cooldown"]:
                 log(f"wake word detected ({score:.2f})")
-                handle_command(mic, ambient, agent, voice, listen, log_text)
+                handle_command(mic, ambient, agent, voice, listen, log_text,
+                               voice_level=max(recent) if recent else 0.0)
                 # Nothing drained the mic while we were thinking and speaking,
                 # so the pipe holds seconds of stale audio (including our own
                 # reply). Start a fresh stream rather than replay it.

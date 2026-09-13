@@ -36,12 +36,16 @@ def frames_at(level, seconds, offset=0):
     return [one.copy() for _ in range(n)]
 
 
-def run(script, ambient=100.0, listen=LISTEN):
-    """Feed `script` to capture_command and return seconds of audio kept."""
+def run(script, ambient=100.0, listen=LISTEN, voice_level=0.0):
+    """Feed `script` to capture_command and return seconds of audio kept.
+
+    voice_level is how loud the wake word was. The daemon always has one; a
+    zero here exercises the fallback for a capture that never heard one.
+    """
     queue = list(script)
     jl.read_chunk = lambda mic: queue.pop(0) if queue else None
     jl._running = True
-    out = jl.capture_command(None, ambient, listen)
+    out = jl.capture_command(None, ambient, listen, voice_level)
     return None if out is None else len(out) / jl.RATE
 
 
@@ -77,7 +81,7 @@ results.append(check(
 stale = []
 for _ in range(6):
     stale += frames_at(500, 0.4) + frames_at(30, 0.3)
-kept = run(stale + frames_at(20, 2.0), ambient=400.0)
+kept = run(stale + frames_at(20, 2.0), ambient=400.0, voice_level=500)
 ok = kept is not None and kept >= 2.0
 print(f"  {'PASS' if ok else 'FAIL'}  a stale room level recovers: kept {kept}s, wanted >=2.0s")
 results.append(ok)
@@ -102,6 +106,24 @@ results.append(check(
     "a mic with a DC offset still endpoints",
     run(frames_at(900, 1.5, offset=-2817) + frames_at(20, 3.0, offset=-2817)),
     1.5 + LISTEN["silence_tail"]))
+
+# The room someone moved into is louder than the one they set this up in.
+# A fixed multiple of the room put the bar over their head: nothing counted
+# as talking, so the recorder ran to max_command on every question and threw
+# the result away. The wake word is the measurement that fixes it.
+results.append(check(
+    "a voice in a loud room is still heard",
+    run(frames_at(600, 2.0) + frames_at(150, 2.0),
+        ambient=150.0, voice_level=600),
+    2.0 + LISTEN["silence_tail"]))
+
+# And the misfire case: nobody says anything at all. Waiting out max_command
+# to discard it costs the speaker the whole ceiling for nothing.
+gave_up = run(frames_at(30, 12.0), ambient=30.0, voice_level=600)
+ok = gave_up is None
+print(f"  {'PASS' if ok else 'FAIL'}  silence after a wake word gives up early: "
+      f"{gave_up}")
+results.append(ok)
 
 print()
 if all(results):
