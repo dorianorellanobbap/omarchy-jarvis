@@ -1616,6 +1616,16 @@ def respond(agent, voice, text, log_text=False):
     if opens:
         if agent.actions:
             opened, failed = run_directives(opens)
+            # Launching an app that is already running raises its existing
+            # window, and the compositor follows focus to whatever workspace
+            # that window lives on. So "switch to workspace five and open
+            # spotify" arrives on five, then gets dragged back to four by a
+            # Spotify that was already there. Asking for the workspace again
+            # afterwards costs one dispatch and leaves the end state the one
+            # that was actually requested.
+            landing = next((d for d in desk if d[0] == "workspace"), None)
+            if landing and opened and agent.desktop:
+                run_directive(landing)
             if not failed and not answer:
                 answer = "Opening it now." if opened == 1 else "Opening them now."
             elif failed and opened:
