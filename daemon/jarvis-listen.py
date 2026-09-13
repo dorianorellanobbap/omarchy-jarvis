@@ -1464,9 +1464,14 @@ def main():
     if args.mic:
         # Two phases, because one reading cannot tell a dead mic from a quiet
         # room. The room sets the bar; the voice has to clear it.
-        print("Say nothing for 3 seconds...")
+        # flush, because these are instructions and they are worth nothing
+        # after the thing they were instructing. Python block-buffers stdout
+        # when it is a pipe rather than a terminal, so unflushed prompts all
+        # arrive at exit: run from a terminal this looks fine, run from the
+        # panel it tells you to speak once the recording is already over.
+        print("Say nothing for 3 seconds...", flush=True)
         quiet = describe_mic(sample_mic(3.0))
-        print("Now say something, out loud, for 5 seconds...")
+        print("Now say something, out loud, for 5 seconds...", flush=True)
         spoken = describe_mic(sample_mic(5.0))
         print()
         return 0 if report_mic(quiet, spoken) else 1
