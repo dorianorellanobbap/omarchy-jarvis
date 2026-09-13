@@ -125,6 +125,22 @@ print(f"  {'PASS' if ok else 'FAIL'}  silence after a wake word gives up early: 
       f"{gave_up}")
 results.append(ok)
 
+# A real room, measured: quiet end 99, median 161, loud end 225, peaks 251.
+# Judging silence from the quiet end put the line under 93% of that room's own
+# frames, so the timer reset constantly and the sentence never ended.
+noisy = 225.0
+on, sus = jl.thresholds(noisy, 600)
+ok = sus > 251 * 0.9 and on < 600
+print(f"  {'PASS' if ok else 'FAIL'}  a fluctuating room is judged by its loud "
+      f"end (onset {on:.0f}, sustain {sus:.0f})")
+results.append(ok)
+
+results.append(check(
+    "a sentence ends in that room",
+    run(frames_at(600, 2.0) + frames_at(160, 2.0),
+        ambient=noisy, voice_level=600),
+    2.0 + LISTEN["silence_tail"]))
+
 print()
 if all(results):
     print("all endpointing tests passed")

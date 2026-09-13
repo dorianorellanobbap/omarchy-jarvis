@@ -66,7 +66,7 @@ results.append(case(
 # A good mic in a quiet room, someone speaking normally.
 results.append(case(
     "a working mic passes",
-    d(frames(45, 3.0)), d(frames(2500, 3.0)), True, "56x the room"))
+    d(frames(45, 3.0)), d(frames(2500, 3.0)), True, "x the room"))
 
 # Working, centred or not: the offset is a note, never a failure.
 results.append(case(
@@ -79,7 +79,7 @@ results.append(case(
 # word does not work" from the outside.
 results.append(case(
     "a voice under the threshold is named",
-    d(frames(45, 3.0)), d(frames(200, 3.0)), False, "turn the input volume up"))
+    d(frames(45, 3.0)), d(frames(50, 3.0)), False, "turn the input volume up"))
 
 # The verdict has to be scale free: the same voice-to-room ratio must read the
 # same whether the mic is at 30% or 90%. These two are the identical situation

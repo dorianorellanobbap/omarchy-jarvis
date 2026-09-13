@@ -650,7 +650,7 @@ def chime(kind):
         log("chime timed out; is the audio server healthy?")
 
 
-def capture_command(mic, ambient, listen, voice_level=0.0):
+def capture_command(mic, room_start, listen, voice_level=0.0):
     """Record until the speaker stops. Returns int16 samples, or None.
 
     Two thresholds, not one. Speech is not uniformly loud: unvoiced
@@ -667,7 +667,7 @@ def capture_command(mic, ambient, listen, voice_level=0.0):
     it. Quiet frames pull it down quickly and push it up slowly, so a long
     question cannot drag the bar up behind itself and cut off its own end.
     """
-    floor = max(ambient, 1.0)
+    room = max(room_start, 1.0)
     frames = []
     speech_time = 0.0
     silence_time = 0.0
@@ -682,13 +682,7 @@ def capture_command(mic, ambient, listen, voice_level=0.0):
         elapsed += frame_secs
 
         level = rms(samples)
-        if level < floor:
-            # Downward on every frame, including ones we are calling speech.
-            # A stale room level, left over from a noisy moment before the
-            # wake word, otherwise holds the bar above the speaker for the
-            # whole question and nothing ever counts as talking.
-            floor = floor * 0.9 + level * 0.1
-        onset, sustain = thresholds(floor, voice_level)
+        onset, sustain = thresholds(room, voice_level)
 
         if level > (sustain if speech_time else onset):
             speech_time += frame_secs
@@ -696,7 +690,10 @@ def capture_command(mic, ambient, listen, voice_level=0.0):
             continue
 
         silence_time += frame_secs
-        floor = floor * 0.995 + level * 0.005
+        # This frame was not speech, so it is the room. Track the loud end of
+        # it: rise to a new peak at once, fall back slowly, and never climb
+        # into the range where a voice lives.
+        room = min(max(level, room * 0.995), onset * 0.8)
         if speech_time >= listen["min_speech"] and silence_time >= listen["silence_tail"]:
             break
         # Nobody started talking. Waiting out max_command to then discard the
@@ -704,7 +701,7 @@ def capture_command(mic, ambient, listen, voice_level=0.0):
         # standing there, and tells them nothing about why.
         if speech_time == 0.0 and elapsed >= LISTEN_GIVE_UP_SECONDS:
             log(f"nothing above {onset:.0f} in the first "
-                f"{LISTEN_GIVE_UP_SECONDS:.0f}s (room {floor:.0f}); giving up")
+                f"{LISTEN_GIVE_UP_SECONDS:.0f}s (room {room:.0f}); giving up")
             return None
 
     if speech_time < listen["min_speech"]:
@@ -718,34 +715,42 @@ def capture_command(mic, ambient, listen, voice_level=0.0):
     return np.concatenate(frames)
 
 
-def thresholds(floor, voice_level=0.0):
-    """Levels that separate talking from not, for a room measured at `floor`.
+def room_level(window, fallback):
+    """The loud end of the room: the 95th percentile of recent quiet frames.
 
-    Both are multiples of the room, never fixed levels, because the numbers a
-    microphone reports are not a physical unit: they scale with input gain,
-    with the hardware, and with the driver. The same voice in the same room
-    measured 326 at 50% input volume and about three times that at 70%.
-
-    `voice_level` is how loud the wake word was, which is this speaker, in
-    this room, a second ago. It is worth more than any ratio we could pick:
-    a fixed multiple of the room is a guess about how far above it someone
-    ought to be, and in a louder room that guess put the bar over the
-    speaker's head, so nothing counted as talking, the recorder ran to
-    max_command every time and then threw the recording away.
-
-    So the bar goes under the voice actually heard, held between a floor it
-    must clear to not be the room, and a ceiling so one shouted wake word
-    cannot make an ordinary sentence inaudible. Sustain sits below onset for
-    the usual reason: starting a sentence should take a clear voice, staying
-    in one should survive its quiet parts.
+    Not the maximum, which one door slam would own for six seconds, and not
+    the median, which half the room sits above.
     """
-    if voice_level <= 0.0:
-        onset = max(floor * 5.0, 40.0)
-        return onset, max(floor * 2.0, 20.0)
-    onset = min(max(voice_level * 0.35, floor * 1.2), max(floor * 5.0, 40.0))
-    onset = max(onset, 40.0)
-    sustain = min(max(onset * 0.5, floor * 1.05), onset * 0.9)
-    return onset, max(sustain, 20.0)
+    if len(window) < 8:
+        return float(fallback or 0.0)
+    return float(np.percentile(np.fromiter(window, dtype=np.float32), 95))
+
+
+def thresholds(room, voice_level=0.0):
+    """Levels that separate talking from not, for a room measured at `room`.
+
+    `room` is the loud end of the room, not its quiet end, and that
+    distinction is most of this function. A tracker that chases the quietest
+    moment of a fluctuating room settles far below the noise actually in it:
+    measured in one real room, the quiet end read 99 while the noise reached
+    251, so a silence line drawn from the quiet end sat beneath 93% of the
+    room's own frames. Every one of those resets the silence timer, and the
+    sentence never ends.
+
+    `voice_level` is how loud the wake word was, which is this speaker in
+    this room a second ago, and is worth more than any ratio we could pick.
+    So the bar goes above the room's noise and below the voice actually
+    heard. Where both cannot hold at once the room is simply too loud for
+    that microphone, and `--mic` says so in words.
+    """
+    room = max(room, 0.0)
+    onset = max(room * 1.5, 40.0)
+    if voice_level > 0.0:
+        # Under the voice we heard, but never down into the room.
+        onset = max(min(onset, voice_level * 0.6), room * 1.25, 40.0)
+    # Staying in a sentence always takes less than starting one.
+    sustain = min(max(room * 1.25, 20.0), onset * 0.9)
+    return onset, sustain
 
 
 def sample_mic(seconds):
@@ -787,6 +792,9 @@ def describe_mic(frames):
         "offset": float(block.mean()),
         "peak": float(np.abs(block).max()),
         "floor": float(np.median(levels)),
+        # The same measure the daemon judges silence by, so this report
+        # cannot quote a threshold the listener does not actually use.
+        "room": float(np.percentile(levels, 95)),
         "quietest": float(levels.min()),
         "loudest": float(levels.max()),
         "clipped": float(np.mean(np.abs(block) > 32000)),
@@ -807,9 +815,9 @@ def report_mic(quiet, spoken=None):
         print("         pactl info | grep 'Default Source'")
         return False
 
-    onset, sustain = thresholds(quiet["floor"])
-    print(f"ok       captured {quiet['seconds']:.1f}s, "
-          f"room level {quiet['floor']:.0f}, speech needs about {onset:.0f}")
+    onset, sustain = thresholds(quiet["room"])
+    print(f"ok       captured {quiet['seconds']:.1f}s, room is {quiet['floor']:.0f} "
+          f"and reaches {quiet['room']:.0f}, speech needs about {onset:.0f}")
 
     ok = True
     # A mic resting off zero reads loud in a silent room to anything that does
@@ -843,7 +851,7 @@ def report_mic(quiet, spoken=None):
     # room leaves the gaps between words above that line and the question runs
     # to max_command instead of ending. Clearing onset already takes 5x, so
     # only the band between 5x and 8x can reach this warning.
-    margin = spoken["loudest"] / max(quiet["floor"], 1.0)
+    margin = spoken["loudest"] / max(quiet["room"], 1.0)
     print(f"ok       while talking it reached {spoken['loudest']:.0f}, "
           f"{margin:.0f}x the room")
     if margin < 8.0:
@@ -1532,6 +1540,11 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
     # About a second and a half of levels: long enough to hold a wake word,
     # short enough that it is this utterance and not an old one.
     recent = collections.deque(maxlen=int(1.5 * RATE / CHUNK_SAMPLES))
+    # Six seconds of frames that were not someone talking. The room's loud
+    # end comes from a percentile of these, because what matters for hearing
+    # the end of a sentence is the noise the room actually reaches, not the
+    # quietest instant it ever has.
+    room_window = collections.deque(maxlen=int(6.0 * RATE / CHUNK_SAMPLES))
 
     try:
         while _running:
@@ -1558,6 +1571,8 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
             # not drag the bar up over someone mid-sentence.
             if ambient is None:
                 ambient = level
+            if ambient and level < ambient * 3:
+                room_window.append(level)
             elif level < ambient * 2:
                 ambient = (ambient * 0.9 + level * 0.1) if level < ambient \
                     else (ambient * 0.995 + level * 0.005)
@@ -1567,7 +1582,8 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
 
             if score > listen["wake_threshold"] and time.time() - last_fire > listen["cooldown"]:
                 log(f"wake word detected ({score:.2f})")
-                handle_command(mic, ambient, agent, voice, listen, log_text,
+                handle_command(mic, room_level(room_window, ambient), agent,
+                               voice, listen, log_text,
                                voice_level=max(recent) if recent else 0.0)
                 # Nothing drained the mic while we were thinking and speaking,
                 # so the pipe holds seconds of stale audio (including our own
