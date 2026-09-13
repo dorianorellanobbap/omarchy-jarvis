@@ -639,8 +639,7 @@ def capture_command(mic, ambient, listen):
             # wake word, otherwise holds the bar above the speaker for the
             # whole question and nothing ever counts as talking.
             floor = floor * 0.9 + level * 0.1
-        onset = max(floor * 3.0, 300.0)
-        sustain = max(floor * 1.5, 150.0)
+        onset, sustain = thresholds(floor)
 
         if level > (sustain if speech_time else onset):
             speech_time += frame_secs
@@ -661,6 +660,26 @@ def capture_command(mic, ambient, listen):
         log(f"hit the {listen['max_command']:.0f}s ceiling while you were "
             f"still talking; raise max_command if questions get cut off")
     return np.concatenate(frames)
+
+
+def thresholds(floor):
+    """Levels that separate talking from not, for a room measured at `floor`.
+
+    Both are multiples of the room, never fixed levels, because the numbers a
+    microphone reports are not a physical unit: they scale with input gain,
+    with the hardware, and with the driver. The same voice in the same room
+    measured 326 at 50% input volume and about three times that at 70%. A
+    fixed bar of 300 is six times the room on one setting and sixteen on
+    another, and on a quieter mic it is simply unreachable, so someone speaks
+    normally and is never heard while their signal is perfectly good.
+
+    Onset is deliberately well above sustain. Starting a sentence should take
+    a clear voice; staying in one should survive the quiet parts of a word.
+    The small absolute guards only matter when the floor is near zero, where
+    a pure multiple would make every rustle count as speech and the question
+    would never end.
+    """
+    return max(floor * 5.0, 40.0), max(floor * 2.0, 20.0)
 
 
 def sample_mic(seconds):
@@ -722,7 +741,7 @@ def report_mic(quiet, spoken=None):
         print("         pactl info | grep 'Default Source'")
         return False
 
-    onset = max(quiet["floor"] * 3.0, 300.0)
+    onset, sustain = thresholds(quiet["floor"])
     print(f"ok       captured {quiet['seconds']:.1f}s, "
           f"room level {quiet['floor']:.0f}, speech needs about {onset:.0f}")
 
@@ -738,10 +757,6 @@ def report_mic(quiet, spoken=None):
         print("FAIL     the microphone is producing silence, not quiet room tone")
         print("         it is probably muted or its input volume is at zero")
         ok = False
-    elif quiet["floor"] > 300:
-        print(f"warn     this room is noisy ({quiet['floor']:.0f}), so speech has "
-              f"to clear {onset:.0f} to register")
-        print("         expect missed wake words; a headset mic is the usual fix")
     if quiet["clipped"] > 0.01:
         print("warn     the input is clipping with nobody talking; turn the gain down")
 
@@ -754,18 +769,21 @@ def report_mic(quiet, spoken=None):
         print("         turn the input volume up, or move closer to the mic")
         return False
 
-    # How far the voice sits above the room is what decides whether the end of
-    # a question is noticed. Staying in a sentence only needs 1.5x the floor,
-    # so a voice sitting barely above the room leaves the gaps between words
-    # over that line, and the question runs to max_command instead of ending.
-    # Anything under 4x is worth saying out loud; under 3x cannot reach here,
-    # because clearing onset already requires 3x.
+    # How far the voice sits above the room is the whole verdict, and it is the
+    # only part of this that means anything on hardware we have never seen. A
+    # loud room with a proportionally loud voice is fine; a quiet room with a
+    # voice barely above it is not, at any absolute level. Staying inside a
+    # sentence takes 2x the room, so a voice peaking at only a few times the
+    # room leaves the gaps between words above that line and the question runs
+    # to max_command instead of ending. Clearing onset already takes 5x, so
+    # only the band between 5x and 8x can reach this warning.
     margin = spoken["loudest"] / max(quiet["floor"], 1.0)
     print(f"ok       while talking it reached {spoken['loudest']:.0f}, "
           f"{margin:.0f}x the room")
-    if margin < 4.0:
+    if margin < 8.0:
         print("warn     that is a narrow margin over the room noise, so it may "
               "not notice when you stop talking")
+        print("         a headset mic, or more input volume, widens it")
     if spoken["clipped"] > 0.02:
         print("warn     your voice is clipping the input; turn the gain down")
     return ok
@@ -1305,7 +1323,12 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
     mic = open_mic()
     set_state("idle")
 
-    ambient = 200.0
+    # Seeded from the room itself on the first frame, not from a constant. A
+    # fixed starting value is a guess about someone else's microphone: too
+    # high and the bar sits above their voice until it decays, which is the
+    # first minute after every restart, and that is exactly when someone is
+    # standing there testing whether it works.
+    ambient = None
     last_fire = 0.0
 
     try:
@@ -1320,9 +1343,15 @@ def listen_forever(agent, voice, wake_path, wake_key, listen, log_text=False):
                 continue
 
             level = rms(samples)
-            # Slow rolling floor so the VAD adapts to the room.
-            if level < ambient * 2:
-                ambient = ambient * 0.995 + level * 0.005
+            # Rolling floor, ignoring anything loud enough to be a voice.
+            # Falls fast and rises slowly: a room that goes quiet should be
+            # believed within a second, while a room that gets loud should
+            # not drag the bar up over someone mid-sentence.
+            if ambient is None:
+                ambient = level
+            elif level < ambient * 2:
+                ambient = (ambient * 0.9 + level * 0.1) if level < ambient \
+                    else (ambient * 0.995 + level * 0.005)
 
             scores = model.predict(samples)
             score = float(scores.get(wake_key, 0.0))

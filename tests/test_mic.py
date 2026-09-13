@@ -79,20 +79,25 @@ results.append(case(
 # word does not work" from the outside.
 results.append(case(
     "a voice under the threshold is named",
-    d(frames(45, 3.0)), d(frames(200, 3.0)), False, "under the 300 needed"))
+    d(frames(45, 3.0)), d(frames(200, 3.0)), False, "turn the input volume up"))
 
-# A loud room raises the bar the voice has to clear.
+# The verdict has to be scale free: the same voice-to-room ratio must read the
+# same whether the mic is at 30% or 90%. These two are the identical situation
+# measured ten times apart, and both are fine.
 results.append(case(
-    "a noisy room warns",
-    d(frames(600, 3.0)), d(frames(2500, 3.0)), True, "this room is noisy"))
+    "a quiet mic with a good ratio passes",
+    d(frames(20, 3.0)), d(frames(320, 3.0)), True, "16x the room"))
+results.append(case(
+    "a loud mic with the same ratio passes identically",
+    d(frames(200, 3.0)), d(frames(3200, 3.0)), True, "16x the room"))
 
 # Loud enough to be heard, but barely above the room, so the gaps between
 # words stay over the line that keeps a sentence open and the question runs to
-# the ceiling. Clearing onset already takes 3x the floor, so only the band
-# between 3x and 4x can reach this warning at all.
+# the ceiling. Clearing onset already takes 5x the floor, so only the band
+# between 5x and 8x can reach this warning at all.
 results.append(case(
     "a narrow margin over the room warns",
-    d(frames(100, 3.0)), d(frames(350, 3.0)), True, "narrow margin"))
+    d(frames(100, 3.0)), d(frames(600, 3.0)), True, "narrow margin"))
 
 print()
 if all(results):
