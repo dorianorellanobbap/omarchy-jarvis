@@ -663,6 +663,114 @@ def capture_command(mic, ambient, listen):
     return np.concatenate(frames)
 
 
+def sample_mic(seconds):
+    """Collect `seconds` of frames from the mic. Returns a list of frames.
+
+    Opens its own stream and closes it again, so it is safe to run while
+    nothing else holds the microphone. Returns whatever it got if the stream
+    dies early, and an empty list if it never produced anything.
+    """
+    mic = open_mic()
+    frames = []
+    want = int(seconds * RATE / CHUNK_SAMPLES)
+    try:
+        # A stream that just opened has not settled: the first frames can come
+        # back constant, which reads as a silent mic and skews both the offset
+        # and the floor. The daemon never sees this because it holds one
+        # stream open for as long as it is armed.
+        for _ in range(int(0.5 * RATE / CHUNK_SAMPLES)):
+            if read_chunk(mic) is None:
+                break
+        for _ in range(want):
+            samples = read_chunk(mic)
+            if samples is None:
+                break
+            frames.append(samples)
+    finally:
+        mic.kill()
+    return frames
+
+
+def describe_mic(frames):
+    """Turn raw frames into the numbers that decide whether speech is heard."""
+    if not frames:
+        return None
+    block = np.concatenate(frames).astype(np.float32)
+    levels = np.array([rms(f) for f in frames])
+    return {
+        "seconds": len(block) / RATE,
+        "offset": float(block.mean()),
+        "peak": float(np.abs(block).max()),
+        "floor": float(np.median(levels)),
+        "quietest": float(levels.min()),
+        "loudest": float(levels.max()),
+        "clipped": float(np.mean(np.abs(block) > 32000)),
+    }
+
+
+def report_mic(quiet, spoken=None):
+    """Print a verdict on the microphone. Returns True if it looks usable.
+
+    Everything here is about one question: does this person's voice clear the
+    bar that the wake word and the endpointer both work from? A mic can be
+    present, unmuted and still fail that, and the failure is invisible from
+    the outside: the daemon simply never hears anyone.
+    """
+    if quiet is None:
+        print("FAIL     the microphone produced no audio at all")
+        print("         check that pw-record works and a source is selected:")
+        print("         pactl info | grep 'Default Source'")
+        return False
+
+    onset = max(quiet["floor"] * 3.0, 300.0)
+    print(f"ok       captured {quiet['seconds']:.1f}s, "
+          f"room level {quiet['floor']:.0f}, speech needs about {onset:.0f}")
+
+    ok = True
+    # A mic resting off zero reads loud in a silent room to anything that does
+    # not centre it first. Jarvis does, so this is a note and not a failure.
+    if abs(quiet["offset"]) > 500:
+        print(f"note     this mic rests at a DC offset of {quiet['offset']:.0f} "
+              f"rather than 0, which is handled")
+    # A working mic in a treated room still reads tens of units of noise. Only
+    # digital silence, every sample identical, means nothing is arriving.
+    if quiet["loudest"] < 2.0:
+        print("FAIL     the microphone is producing silence, not quiet room tone")
+        print("         it is probably muted or its input volume is at zero")
+        ok = False
+    elif quiet["floor"] > 300:
+        print(f"warn     this room is noisy ({quiet['floor']:.0f}), so speech has "
+              f"to clear {onset:.0f} to register")
+        print("         expect missed wake words; a headset mic is the usual fix")
+    if quiet["clipped"] > 0.01:
+        print("warn     the input is clipping with nobody talking; turn the gain down")
+
+    if spoken is None:
+        return ok
+
+    if spoken["loudest"] < onset:
+        print(f"FAIL     while talking it only reached {spoken['loudest']:.0f}, "
+              f"under the {onset:.0f} needed")
+        print("         turn the input volume up, or move closer to the mic")
+        return False
+
+    # How far the voice sits above the room is what decides whether the end of
+    # a question is noticed. Staying in a sentence only needs 1.5x the floor,
+    # so a voice sitting barely above the room leaves the gaps between words
+    # over that line, and the question runs to max_command instead of ending.
+    # Anything under 4x is worth saying out loud; under 3x cannot reach here,
+    # because clearing onset already requires 3x.
+    margin = spoken["loudest"] / max(quiet["floor"], 1.0)
+    print(f"ok       while talking it reached {spoken['loudest']:.0f}, "
+          f"{margin:.0f}x the room")
+    if margin < 4.0:
+        print("warn     that is a narrow margin over the room noise, so it may "
+              "not notice when you stop talking")
+    if spoken["clipped"] > 0.02:
+        print("warn     your voice is clipping the input; turn the gain down")
+    return ok
+
+
 def write_wav(samples, path):
     # Centre it for the same reason rms() does. A mic resting at -2800 spends
     # 9% of its headroom on an offset the transcriber has no use for.
@@ -1249,6 +1357,8 @@ def main():
                         help="list configured agents and exit")
     parser.add_argument("--check", action="store_true",
                         help="verify config and runtime dependencies, then exit")
+    parser.add_argument("--mic", action="store_true",
+                        help="test the microphone, listening while you speak, then exit")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -1274,6 +1384,16 @@ def main():
     wake_path, wake_key = resolve_wake_model(cfg)
     log_text = bool(cfg.get("log_transcripts", False))
 
+    if args.mic:
+        # Two phases, because one reading cannot tell a dead mic from a quiet
+        # room. The room sets the bar; the voice has to clear it.
+        print("Say nothing for 3 seconds...")
+        quiet = describe_mic(sample_mic(3.0))
+        print("Now say something, out loud, for 5 seconds...")
+        spoken = describe_mic(sample_mic(5.0))
+        print()
+        return 0 if report_mic(quiet, spoken) else 1
+
     if args.check:
         ok = True
         for label, path in (("voice", voice), ("wake model", wake_path)):
@@ -1284,6 +1404,10 @@ def main():
             found = shutil.which(cmd)
             ok &= bool(found)
             print(f"{'ok ' if found else 'MISSING'}  {cmd}: {found or '-'}")
+        # A mic that is muted or unselected passes every check above and then
+        # never hears anyone, which is the hardest failure to work out from
+        # the outside. Three seconds of room tone is enough to catch it.
+        ok &= report_mic(describe_mic(sample_mic(3.0)))
         return 0 if ok else 1
 
     if args.ask:

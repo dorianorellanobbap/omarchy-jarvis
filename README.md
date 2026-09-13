@@ -125,7 +125,8 @@ speaking.
 J=~/.local/share/jarvis
 $J/bin/jarvis-config show                                # settings as JSON
 $J/venv/bin/python $J/jarvis-listen.py --agents          # what's configured
-$J/venv/bin/python $J/jarvis-listen.py --check           # verify deps
+$J/venv/bin/python $J/jarvis-listen.py --check           # verify deps and mic
+$J/venv/bin/python $J/jarvis-listen.py --mic             # test the mic aloud
 $J/venv/bin/python $J/jarvis-listen.py --ask "hello"     # test without the mic
 journalctl --user -u jarvis -f                           # watch it work
 ```
