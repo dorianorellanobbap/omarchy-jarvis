@@ -1353,7 +1353,7 @@ def speak(text, voice):
         out = tmp.name
     try:
         try:
-            run_bounded(
+            proc = run_bounded(
                 [VENV_PY, "-m", "piper", "-m", voice, "-f", out],
                 input_text=text, timeout=180,
                 stdout_limit=64 << 10, stderr_limit=64 << 10,
@@ -1366,13 +1366,28 @@ def speak(text, voice):
         # The capped reply synthesises to at most a couple of minutes of
         # audio, so a playback still running at five is a wedged audio
         # server holding the listener hostage, not a long answer.
-        if os.path.getsize(out) > 44:
-            try:
-                subprocess.run(["pw-play", out], stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, check=False,
-                               timeout=300)
-            except subprocess.TimeoutExpired:
-                log("playback timed out; is the audio server healthy?")
+        size = os.path.getsize(out)
+        if size <= 44:
+            # Nothing but a header. Silence is the worst possible report: from
+            # outside it is indistinguishable from a voice that simply does
+            # not speak, and someone will change voices, restart the service
+            # and doubt their speakers before suspecting this.
+            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+            log(f"speech synthesis produced no audio with "
+                f"{os.path.basename(voice)}"
+                + (f": {detail[-1][:200]}" if detail else ""))
+            return
+        try:
+            played = subprocess.run(["pw-play", out], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, check=False,
+                                    timeout=300)
+        except subprocess.TimeoutExpired:
+            log("playback timed out; is the audio server healthy?")
+            return
+        if played.returncode != 0:
+            reason = (played.stderr or b"").decode("utf-8", "replace").strip()
+            log(f"playback failed (exit {played.returncode})"
+                + (f": {reason.splitlines()[-1][:200]}" if reason else ""))
     finally:
         try:
             os.unlink(out)
