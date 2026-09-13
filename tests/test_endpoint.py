@@ -23,12 +23,16 @@ FRAME = jl.CHUNK_SAMPLES / jl.RATE          # 0.08s
 LISTEN = {"silence_tail": 1.2, "min_speech": 0.4, "max_command": 15.0}
 
 
-def frames_at(level, seconds):
-    """Frames whose RMS is exactly `level`, alternating sign so it is audio."""
+def frames_at(level, seconds, offset=0):
+    """Frames whose RMS is exactly `level`, alternating sign so it is audio.
+
+    `offset` shifts the whole frame off zero, the way a microphone with a DC
+    bias does.
+    """
     n = int(round(seconds / FRAME))
     one = np.empty(jl.CHUNK_SAMPLES, dtype=np.int16)
-    one[0::2] = int(level)
-    one[1::2] = -int(level)
+    one[0::2] = int(level) + offset
+    one[1::2] = -int(level) + offset
     return [one.copy() for _ in range(n)]
 
 
@@ -89,6 +93,15 @@ results.append(check(
     "max_command still caps the recording",
     run(frames_at(900, 30.0), listen={**LISTEN, "max_command": 5.0}),
     5.0))
+
+# A microphone that rests off zero, like the PX13's internal one at -2817.
+# Measured without removing the offset, a silent room reads ~2817, which is
+# louder than speech: nothing is ever quiet, and the recorder runs to
+# max_command on every question instead of stopping when the speaker does.
+results.append(check(
+    "a mic with a DC offset still endpoints",
+    run(frames_at(900, 1.5, offset=-2817) + frames_at(20, 3.0, offset=-2817)),
+    1.5 + LISTEN["silence_tail"]))
 
 print()
 if all(results):

@@ -558,7 +558,22 @@ def read_chunk(mic):
 
 
 def rms(samples):
-    return float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+    """Loudness of one frame, with any DC offset removed first.
+
+    Some microphones do not sit centred on zero. The ASUS ProArt PX13's
+    internal mic rests around -2800, and a plain RMS of that reads ~2800 in
+    a silent room, which is louder than most speech ever registers. Every
+    frame then looks like talking: the ambient floor never falls, nothing
+    is ever quiet, and the recorder runs until max_command on every single
+    question instead of stopping when you stop.
+
+    Subtracting the frame mean removes the offset. It is a high pass at
+    about 12Hz for an 80ms frame, well below anything in a voice, so it
+    costs nothing on a microphone that was already centred.
+    """
+    centred = samples.astype(np.float32)
+    centred -= centred.mean()
+    return float(np.sqrt(np.mean(centred ** 2)))
 
 
 def tone(freq, ms=120):
@@ -649,6 +664,11 @@ def capture_command(mic, ambient, listen):
 
 
 def write_wav(samples, path):
+    # Centre it for the same reason rms() does. A mic resting at -2800 spends
+    # 9% of its headroom on an offset the transcriber has no use for.
+    samples = samples.astype(np.float32)
+    samples -= samples.mean()
+    samples = np.clip(samples, -32768, 32767).astype(np.int16)
     with wave.open(path, "wb") as fh:
         fh.setnchannels(1)
         fh.setsampwidth(2)
