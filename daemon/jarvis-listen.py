@@ -123,14 +123,16 @@ NO_TOOLS_PROMPT = (
 # The actions half. Only sent to agents configured with actions = true. The
 # agent is never given a tool or a shell: it asks for an action by ending its
 # reply with one directive line, and the daemon decides whether anything
-# happens. See extract_directive/run_directive below.
+# happens. See extract_directives/run_directives below.
 ACTIONS_PROMPT = (
     "You cannot run commands, but you can ask Jarvis to open things. To open "
     "an installed app, add a line at the end of your reply of exactly this "
     "form: <<jarvis:open-app NAME>>. To open a web page in the browser: "
-    "<<jarvis:open-url URL>> (http or https only). At most one such line per "
-    "reply. The line is stripped before your reply is spoken, so also say in "
-    "your reply what you are opening. If asked to do anything else to the "
+    "<<jarvis:open-url URL>> (http or https only). To open several things at "
+    "once, write one line for each, up to three, in the order you want them "
+    "opened. Never refuse a request just because it asks for more than one "
+    "thing. The lines are stripped before your reply is spoken, so also say "
+    "in your reply what you are opening. If asked to do anything else to the "
     "machine, say out loud that you cannot."
 )
 
@@ -1034,8 +1036,8 @@ def clean_reply(text, strip_prefixes):
 # Actions: a structured directive, brokered outside the agent
 #
 # The agent CLI never gets a shell or a tool grant. When actions are on, the
-# agent asks for an action by ending its reply with one directive line; the
-# daemon parses it against a strict pattern, validates the argument again
+# agent asks for an action by ending its reply with directive lines; the
+# daemon parses each against a strict pattern, validates the argument again
 # here, and execs the jarvis-open broker directly -- one argv, no shell --
 # which validates it a third time and can launch an installed .desktop entry
 # or open an http(s) URL, nothing else. A prompt-level instruction plus a
@@ -1112,24 +1114,49 @@ def installed_apps():
     return names
 
 
-def extract_directive(reply):
-    """Split a reply into (spoken_text, directive-or-None).
+# Asking for music and a browser at once is one request, and answering it with
+# "I can only do one thing at a time, ask me again" is a worse assistant than
+# the machinery requires. Several directives are no more authority than one:
+# each is validated on its own and brokered through the same argv, so this is
+# a repeat of an allowed action, not a wider one. The cap keeps a confused or
+# hostile reply from turning one sentence into an unbounded run of launches,
+# and duplicates collapse so "open the browser" twice is one window.
+MAX_DIRECTIVES = 3
+
+
+def extract_directives(reply):
+    """Split a reply into (spoken_text, [directive, ...]).
 
     Directive lines are stripped from the spoken text whether or not actions
-    are enabled -- an ignored directive should not be read aloud either --
-    and only the first one counts.
+    are enabled -- an ignored directive should not be read aloud either.
+    Order is the order the agent asked for, identical requests collapse, and
+    anything past MAX_DIRECTIVES is dropped rather than run.
     """
-    directive = None
+    directives = []
     kept = []
     for line in reply.splitlines():
         match = DIRECTIVE_RE.match(line)
         if match:
-            if directive is None:
-                directive = (_DIRECTIVE_KINDS[match.group(1)],
-                             match.group(2).strip())
+            directive = (_DIRECTIVE_KINDS[match.group(1)],
+                         match.group(2).strip())
+            if directive not in directives and len(directives) < MAX_DIRECTIVES:
+                directives.append(directive)
             continue
         kept.append(line)
-    return "\n".join(kept).strip(), directive
+    return "\n".join(kept).strip(), directives
+
+
+def run_directives(directives):
+    """Run each directive in order. Returns (opened, failed) counts.
+
+    One failure does not abandon the rest: if the music player opens and the
+    browser does not, the music should still be playing.
+    """
+    opened = 0
+    for directive in directives:
+        if run_directive(directive):
+            opened += 1
+    return opened, len(directives) - opened
 
 
 def run_directive(directive):
@@ -1197,9 +1224,12 @@ def run_search(agent, query, log_text=False):
     # The query is derived from what was spoken: journal its size, not it.
     log(f"searching: {query}" if log_text else
         f"searching ({len(query)} characters)")
-    reply, stray = extract_directive(ask_agent(agent, query, web=True))
+    reply, stray = extract_directives(ask_agent(agent, query, web=True))
     if stray:
-        log(f"directive in a web-tainted reply ignored ({stray[0]})")
+        # Kinds only. The values came off the web, and the journal is not the
+        # place to learn what a page asked us to open.
+        log(f"{len(stray)} directive(s) in a web-tainted reply ignored "
+            f"({', '.join(sorted({kind for kind, _ in stray}))})")
     return (reply[:MAX_SPOKEN_CHARS]
             or "Sorry, the search did not come back with an answer.")
 
@@ -1249,20 +1279,28 @@ def respond(agent, voice, text, log_text=False):
     it was, because spoken content can carry secrets and journald persists.
     """
     log(f"heard: {text}" if log_text else f"heard {len(text)} characters")
-    answer, directive = extract_directive(ask_agent(agent, text))
+    answer, directives = extract_directives(ask_agent(agent, text))
     answer = answer[:MAX_SPOKEN_CHARS]
-    if directive and directive[0] == "search":
-        answer = run_search(agent, directive[1], log_text)
-        directive = None
-    if directive:
+    # A search is a hand-off, not an action, and the prompt already forbids
+    # combining it with an open. If one appears anyway it wins alone, because
+    # the round it hands to is the one whose output may not be trusted to act.
+    search = next((d for d in directives if d[0] == "search"), None)
+    if search:
+        answer = run_search(agent, search[1], log_text)
+        directives = []
+    if directives:
         if agent.actions:
-            ok = run_directive(directive)
-            if ok and not answer:
-                answer = "Opening it now."
-            elif not ok:
-                answer = (answer + " Sorry, that did not open.").strip()
+            opened, failed = run_directives(directives)
+            if not failed and not answer:
+                answer = "Opening it now." if opened == 1 else "Opening them now."
+            elif failed and opened:
+                answer = (answer + " Sorry, part of that did not open.").strip()
+            elif failed:
+                answer = (answer + (" Sorry, that did not open." if failed == 1
+                                    else " Sorry, those did not open.")).strip()
         else:
-            log("agent sent an open directive but actions are off; ignored")
+            log(f"agent sent {len(directives)} open directive(s) but actions "
+                f"are off; ignored")
             if not answer:
                 answer = "Sorry, opening things is turned off."
     # The generic fallback comes last, after directive handling: a reply that
