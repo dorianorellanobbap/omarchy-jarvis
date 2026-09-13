@@ -74,6 +74,20 @@ case("directives never reach the spoken text",
      "Sure.\n<<jarvis:open-url https://example.com/a?b=c>>\nAll set.",
      "Sure.\nAll set.", [("url", "https://example.com/a?b=c")])
 
+# Desktop controls parse as their own kinds, so respond() can gate them on a
+# different flag from the ones that open things.
+case("desktop controls parse",
+     "Switching over.\n<<jarvis:workspace 3>>\n<<jarvis:volume mute>>",
+     "Switching over.", [("workspace", "3"), ("volume", "mute")])
+
+case("a theme name with spaces survives",
+     "<<jarvis:theme Catppuccin Latte>>", "", [("theme", "Catppuccin Latte")])
+
+# The kinds a desktop grant covers, and the ones it does not.
+ok = sorted(jl.DESKTOP_KINDS) == ["brightness", "theme", "volume", "workspace"]
+print(f"  {'PASS' if ok else 'FAIL'}  desktop kinds are only the four controls")
+results.append(ok)
+
 print()
 if all(results):
     print("all directive tests passed")

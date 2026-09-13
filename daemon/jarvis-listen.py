@@ -141,6 +141,22 @@ ACTIONS_PROMPT = (
     "machine, say out loud that you cannot."
 )
 
+# The desktop half. Only sent to agents configured with desktop = true. Same
+# shape as the actions directive, and deliberately the same non-grant: the
+# agent ends its reply with a line, and a broker decides whether anything
+# happens. Every one of these is reversible by saying the opposite, none
+# touches a file, installs anything, or reaches the network.
+DESKTOP_PROMPT = (
+    "You can change four things about the desktop, each by adding a line at "
+    "the end of your reply of exactly this form:\n"
+    "<<jarvis:workspace N>> to switch to workspace N, 1 to 10.\n"
+    "<<jarvis:volume V>> where V is up, down, mute, or a number 0 to 100.\n"
+    "<<jarvis:brightness V>> where V is up, down, or a number 0 to 100.\n"
+    "<<jarvis:theme NAME>> to change the colour theme.{themes}\n"
+    "Say briefly in your reply what you changed. If asked for anything else "
+    "about the machine, say out loud that you cannot."
+)
+
 # The web half. Only sent to agents configured with a web_command. The first
 # call still runs with no tools; asking to search hands the exchange to a
 # second, search-capable invocation whose reply is treated as tainted -- see
@@ -225,6 +241,11 @@ class Agent:
         self.name = name
         self.command = command
         self.actions = bool(spec.get("actions", False))
+        # Separate from actions on purpose. Changing the volume is a different
+        # decision from launching applications, and someone should be able to
+        # grant one without the other. Off unless the config says otherwise,
+        # like every other grant here.
+        self.desktop = bool(spec.get("desktop", False))
 
         # A TOML string here would iterate as characters, and an empty prefix
         # matches every line -- either way clean_reply would quietly eat the
@@ -270,6 +291,11 @@ class Agent:
             parts.append(NO_TOOLS_PROMPT)
         if self.actions:
             parts.append(ACTIONS_PROMPT)
+        if self.desktop:
+            themes = installed_themes()
+            parts.append(DESKTOP_PROMPT.format(
+                themes=(" Installed themes: " + ", ".join(themes) + "."
+                        if themes else "")))
         if self.web:
             parts.append(WEB_PROMPT)
         return "\n\n".join(parts)
@@ -1056,10 +1082,16 @@ def clean_reply(text, strip_prefixes):
 # --------------------------------------------------------------------------
 
 DIRECTIVE_RE = re.compile(
-    r"^\s*<<jarvis:(open-app|open-url|open-bookmark|search)\s+"
+    r"^\s*<<jarvis:(open-app|open-url|open-bookmark|search"
+    r"|workspace|theme|volume|brightness)\s+"
     r"([^<>\n]{1,2048}?)\s*>>\s*$")
 _DIRECTIVE_KINDS = {"open-app": "app", "open-url": "url",
-                    "open-bookmark": "bookmark", "search": "search"}
+                    "open-bookmark": "bookmark", "search": "search",
+                    "workspace": "workspace", "theme": "theme",
+                    "volume": "volume", "brightness": "brightness"}
+# The ones the broker treats as desktop controls rather than as opening
+# something. Gated by `desktop`, not by `actions`.
+DESKTOP_KINDS = ("workspace", "theme", "volume", "brightness")
 # What we will pass the broker as an app query: printable, no leading dash,
 # short. The broker only fuzzy-matches it against installed .desktop names.
 APP_QUERY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}$")
@@ -1131,6 +1163,44 @@ def installed_apps():
 MAX_DIRECTIVES = 3
 
 
+_THEMES_TTL_SECONDS = 60.0
+_themes_cache = {"at": 0.0, "names": []}
+
+
+def installed_themes():
+    """Theme names for the desktop prompt, from the broker's `themes`.
+
+    Unlike the bookmark list, this is safe to put in a prompt: theme names are
+    published by Omarchy, not a record of anything the speaker did. Naming
+    them is what makes "make it look like gruvbox" land on the right one.
+    """
+    now = time.monotonic()
+    if _themes_cache["names"] and now - _themes_cache["at"] < _THEMES_TTL_SECONDS:
+        return _themes_cache["names"]
+    broker = jarvis_open_path()
+    if broker is None:
+        return []
+    try:
+        proc = run_bounded([broker, "themes"], timeout=10,
+                           stdout_limit=64 << 10, stderr_limit=16 << 10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0 or proc.overflowed:
+        return []
+    names, total = [], 0
+    for line in proc.stdout.splitlines():
+        name = line.strip()
+        if not name:
+            continue
+        total += len(name) + 2
+        if total > 2000:
+            break
+        names.append(name)
+    _themes_cache["at"] = now
+    _themes_cache["names"] = names
+    return names
+
+
 def extract_directives(reply):
     """Split a reply into (spoken_text, [directive, ...]).
 
@@ -1172,7 +1242,8 @@ def run_directive(directive):
     # A bookmark query is held to the same shape as an app name: it is a
     # word or two someone said, and the broker only ever matches it against
     # titles it read itself.
-    if kind in ("app", "bookmark") and not APP_QUERY_RE.match(value):
+    if kind in ("app", "bookmark") + DESKTOP_KINDS \
+            and not APP_QUERY_RE.match(value):
         log(f"directive refused: {kind} name failed validation")
         return False
     if kind == "url" and not URL_RE.match(value):
@@ -1298,9 +1369,23 @@ def respond(agent, voice, text, log_text=False):
     if search:
         answer = run_search(agent, search[1], log_text)
         directives = []
-    if directives:
+    desk = [d for d in directives if d[0] in DESKTOP_KINDS]
+    opens = [d for d in directives if d[0] not in DESKTOP_KINDS]
+    if desk:
+        if agent.desktop:
+            changed, failed = run_directives(desk)
+            if changed and not failed and not answer:
+                answer = "Done."
+            elif failed:
+                answer = (answer + " Sorry, I could not change that.").strip()
+        else:
+            log(f"agent sent {len(desk)} desktop directive(s) but desktop "
+                f"controls are off; ignored")
+            if not answer:
+                answer = "Sorry, changing the desktop is turned off."
+    if opens:
         if agent.actions:
-            opened, failed = run_directives(directives)
+            opened, failed = run_directives(opens)
             if not failed and not answer:
                 answer = "Opening it now." if opened == 1 else "Opening them now."
             elif failed and opened:
@@ -1309,7 +1394,7 @@ def respond(agent, voice, text, log_text=False):
                 answer = (answer + (" Sorry, that did not open." if failed == 1
                                     else " Sorry, those did not open.")).strip()
         else:
-            log(f"agent sent {len(directives)} open directive(s) but actions "
+            log(f"agent sent {len(opens)} open directive(s) but actions "
                 f"are off; ignored")
             if not answer:
                 answer = "Sorry, opening things is turned off."

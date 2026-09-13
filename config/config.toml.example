@@ -89,6 +89,13 @@ command = [
 ]
 # Set true to let Jarvis open apps and web pages. Read the note above first.
 actions = false
+# Set true to let Jarvis change four things about the desktop: the workspace,
+# the theme, the volume and the brightness. Separate from `actions` on
+# purpose, so you can grant one without the other. Every value is checked
+# against a fixed list or a number range before it reaches a command, and
+# every one of these is undone by saying the opposite: nothing here touches a
+# file, installs anything, or reaches the network.
+desktop = false
 # Uncomment to let Jarvis search the web (one bounded round, WebSearch only;
 # read the web_command note above first). `--tools` names the whole built-in
 # set this call gets, so WebSearch there means WebSearch and nothing else --

@@ -13,6 +13,11 @@ caller's.
     jarvis-open app <name>      launch one
     jarvis-open url <https://…> open a web page
     jarvis-open bookmark <name> open a bookmark from Chromium's default profile
+    jarvis-open workspace <n>   switch to a workspace
+    jarvis-open theme <name>    set the Omarchy theme
+    jarvis-open themes          every installed theme name
+    jarvis-open volume <what>   up | down | mute | 0-100
+    jarvis-open brightness <w>  up | down | 0-100
 
 It used to be a shell script that ran `grep` over every path matching
 $HOME/.local/share/applications/*.desktop and buffered the whole generated
@@ -229,6 +234,94 @@ def origin_of(url):
     return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
 
 
+# --------------------------------------------------------------------------
+# Desktop controls
+#
+# Every one of these is a fixed argument list with the value substituted into
+# a single slot, and every value is checked against an enum or a number range
+# before it gets there. Nothing the speaker says becomes part of a command
+# name, a flag, or a path: the worst a bad value can do is fail this check.
+#
+# They were chosen for being reversible. Changing a workspace, a theme, the
+# volume or the brightness is undone by saying the opposite, and none of them
+# touches a file, installs anything, or reaches the network.
+# --------------------------------------------------------------------------
+
+# Hyprland's named workspaces go past 10, but a spoken number that large is
+# far more likely to be a misheard year than a workspace someone uses.
+WORKSPACE_RE = re.compile(r"^(?:[1-9]|10)$")
+LEVEL_RE = re.compile(r"^(?:100|[1-9]?[0-9])$")
+DIRECTIONS = ("up", "down")
+
+
+def theme_names():
+    """Installed Omarchy theme names, or [] if the lister is unavailable."""
+    try:
+        proc = subprocess.run(["omarchy-theme-list"], capture_output=True,
+                              text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def resolve_theme(query):
+    """The closest installed theme name, or None.
+
+    Matched the way an app is: against names this script read itself, so the
+    value handed to omarchy-theme-set is always one that already existed.
+    """
+    query = " ".join(query.lower().split())
+    if not query:
+        return None
+    names = theme_names()
+    for name in names:
+        if query == name.lower():
+            return name
+    for name in names:
+        if query in name.lower():
+            return name
+    return None
+
+
+def run_desktop(command, value):
+    """One desktop control. Returns (argv, spoken_result) or None if invalid."""
+    if command == "workspace":
+        if not WORKSPACE_RE.match(value):
+            return None
+        return ["hyprctl", "dispatch", "workspace", value], f"workspace {value}"
+
+    if command == "theme":
+        name = resolve_theme(value)
+        if name is None:
+            return None
+        return ["omarchy-theme-set", name], f"theme {name}"
+
+    if command == "volume":
+        if value == "mute":
+            return ["omarchy-audio-output-volume", "mute-toggle"], "mute toggled"
+        if value in DIRECTIONS:
+            action = "raise" if value == "up" else "lower"
+            return ["omarchy-audio-output-volume", action], f"volume {value}"
+        if LEVEL_RE.match(value):
+            # omarchy's volume command is relative only, so an absolute level
+            # goes through wpctl. Still one fixed argv with a checked number.
+            return (["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", value + "%"],
+                    f"volume {value}%")
+        return None
+
+    if command == "brightness":
+        if value in DIRECTIONS:
+            step = "+10%" if value == "up" else "10%-"
+            return ["omarchy-brightness-display", step], f"brightness {value}"
+        if LEVEL_RE.match(value):
+            return ["omarchy-brightness-display", value + "%"], f"brightness {value}%"
+        return None
+
+    return None
+
+
 def spawn(argv):
     """Detach, so the app outlives this script and the daemon's timeout."""
     subprocess.Popen(argv, start_new_session=True,
@@ -259,7 +352,9 @@ def launch(entry_id):
 
 def usage():
     print("usage: jarvis-open list | app <name> | url <https://...> "
-          "| bookmark <name>", file=sys.stderr)
+          "| bookmark <name> | themes | workspace <n> | theme <name> "
+          "| volume <up|down|mute|0-100> | brightness <up|down|0-100>",
+          file=sys.stderr)
     return 2
 
 
@@ -283,6 +378,27 @@ def main(argv):
             return 1
         launch(entry_id)
         print(f"launched {entry_id}")
+        return 0
+
+    if command == "themes":
+        for name in theme_names():
+            print(name)
+        return 0
+
+    if command in ("workspace", "theme", "volume", "brightness"):
+        if not rest:
+            return usage()
+        value = " ".join(rest)
+        resolved = run_desktop(command, value)
+        if resolved is None:
+            print(f"refusing '{command} {value}'", file=sys.stderr)
+            return 1
+        argv_out, said = resolved
+        if not have(argv_out[0]):
+            print(f"{argv_out[0]} is not installed", file=sys.stderr)
+            return 1
+        spawn(argv_out)
+        print(f"set {said}")
         return 0
 
     if command == "bookmark":
