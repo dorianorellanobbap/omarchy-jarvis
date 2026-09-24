@@ -400,6 +400,7 @@ Panel {
 
             Text {
               id: heroIcon
+              textFormat: Text.PlainText
               text: root.host ? root.host.icon : "󰍭"
               color: root.armed ? root.accent : root.fg
               font.family: root.fontFamily
@@ -418,6 +419,7 @@ Panel {
               spacing: Style.space(2)
 
               Text {
+                textFormat: Text.PlainText
                 text: "Jarvis"
                 color: root.fg
                 font.family: root.fontFamily
@@ -427,6 +429,7 @@ Panel {
                 width: parent.width
               }
               Text {
+                textFormat: Text.PlainText
                 text: root.host ? root.host.stateLabel : ""
                 color: root.armed ? root.accent : Qt.darker(root.fg, 1.4)
                 font.family: root.fontFamily
@@ -466,6 +469,7 @@ Panel {
 
             Text {
               id: pendingText
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               width: parent.width - Style.space(20)
               text: root.armed
@@ -495,6 +499,7 @@ Panel {
               spacing: Style.space(10)
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "Jarvis is not set up on this machine yet"
                 color: root.fg
@@ -505,6 +510,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 // Said plainly and up front, because it is a 63MB download
                 // and an always-on microphone, and neither should be a
@@ -551,6 +557,7 @@ Panel {
 
             Text {
               id: errText
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               width: parent.width - Style.space(20)
               text: root.errorText
@@ -602,6 +609,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: root.agentNote
               visible: text !== ""
               color: Qt.darker(root.fg, 1.4)
@@ -657,6 +665,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: root.installingVoice
                 ? "Downloading " + root.pendingVoice + "… about 63 MB."
                 : "Voices not listed here work too. Put a path in the config file."
@@ -687,6 +696,7 @@ Panel {
 
               Text {
                 id: sensLabel
+                textFormat: Text.PlainText
                 text: "Sensitivity"
                 color: root.fg
                 font.family: root.fontFamily
@@ -694,6 +704,7 @@ Panel {
                 anchors.left: parent.left
               }
               Text {
+                textFormat: Text.PlainText
                 text: root.wakeThreshold.toFixed(2)
                 color: Qt.darker(root.fg, 1.4)
                 font.family: root.fontFamily
@@ -716,6 +727,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: "Higher picks up the wake word more readily, and misfires more."
               color: Qt.darker(root.fg, 1.4)
               font.family: root.fontFamily
@@ -735,6 +747,7 @@ Panel {
 
               Text {
                 id: tailLabel
+                textFormat: Text.PlainText
                 text: "Pause before it answers"
                 color: root.fg
                 font.family: root.fontFamily
@@ -742,6 +755,7 @@ Panel {
                 anchors.left: parent.left
               }
               Text {
+                textFormat: Text.PlainText
                 text: root.silenceTail.toFixed(1) + "s"
                 color: Qt.darker(root.fg, 1.4)
                 font.family: root.fontFamily
@@ -772,6 +786,7 @@ Panel {
 
               Text {
                 id: maxLabel
+                textFormat: Text.PlainText
                 text: "Longest question"
                 color: root.fg
                 font.family: root.fontFamily
@@ -779,6 +794,7 @@ Panel {
                 anchors.left: parent.left
               }
               Text {
+                textFormat: Text.PlainText
                 text: Math.round(root.maxCommand) + "s"
                 color: Qt.darker(root.fg, 1.4)
                 font.family: root.fontFamily
@@ -850,6 +866,7 @@ Panel {
                   spacing: Style.space(2)
 
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: modelData.title
                     color: root.fg
@@ -857,6 +874,7 @@ Panel {
                     font.pixelSize: Style.font.bodySmall
                   }
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: modelData.detail
                     color: Qt.darker(root.fg, 1.4)
@@ -880,6 +898,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               // Worth saying next to the switches: they widen what Jarvis
               // will act on, not what the agent CLI itself may touch.
@@ -977,6 +996,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             visible: !root.needsSetup
             text: "Everything else (adding an agent, the voice) lives in the config file."

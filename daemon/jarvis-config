@@ -75,7 +75,12 @@ GRANTS = {
 # An agent name is read from the config rather than from the caller, but it
 # becomes a table header on the way to the file, so it is held to a shape
 # that cannot carry a newline and open a section of someone else's choosing.
+# The same shape is what `show` will hand the panel: an agent name and a voice
+# id are the two strings from outside that reach a dropdown label, and a
+# dropdown belongs to the shell, so this plugin cannot set its textFormat. A
+# name that cannot look like markup is the only place that can be fixed.
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+VOICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 
 
 def coerce(key, raw):
@@ -156,7 +161,8 @@ def installed_voices():
     d = voices_dir()
     if not os.path.isdir(d):
         return []
-    return sorted(f for f in os.listdir(d) if f.endswith(".onnx"))
+    return sorted(f for f in os.listdir(d)
+                  if f.endswith(".onnx") and VOICE_ID_RE.match(f[:-len(".onnx")]))
 
 
 TABLE_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
@@ -247,6 +253,10 @@ def cmd_show(daemon, args):
 
     agents = []
     for name in sorted(cfg.get("agents", {})):
+        # Held to the same shape `grant` holds it to, for the reason given at
+        # AGENT_NAME_RE: this name is about to become a dropdown label.
+        if not AGENT_NAME_RE.match(str(name)):
+            continue
         try:
             agent = daemon.Agent(name, cfg["agents"][name])
         except ValueError:
