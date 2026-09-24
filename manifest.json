@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "dorian.voice",
   "name": "Jarvis",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Dorian",
-  "description": "Wake-word voice assistant: ask a question out loud, hear the answer. Arm it from the bar.",
+  "description": "Say \"hey jarvis\" and ask. The wake word, the transcription and the voice all run on your machine, so there is no account, no API key and no per-minute bill: the answer comes from an agent CLI you already have. It can also open apps, pages and bookmarks, switch workspaces, change the theme, set volume and brightness and control what is playing, each one opt-in. The agent is never granted a shell or a tool. Arm it from the bar.",
   "kinds": [
     "bar-widget"
   ],

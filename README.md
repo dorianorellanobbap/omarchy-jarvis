@@ -2,8 +2,9 @@
 
 ![Jarvis: voice assistant for the Omarchy bar](preview.png)
 
-Say **"hey jarvis"**, ask a question, hear the answer. A bar widget arms and
-disarms the listener and shows what it is doing.
+Say **"hey jarvis"**, ask a question, hear the answer. Ask it to open something
+or change the desktop and it does that instead. A bar widget arms and disarms
+the listener and shows what it is doing.
 
 Everything except the agent call runs on your machine: [openWakeWord] listens
 on a continuous 16kHz mic stream, [voxtype]'s local whisper model transcribes,
