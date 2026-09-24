@@ -15,6 +15,9 @@ Which agent answers is configuration, not code. Ships a tested, tool-free
 preset for **Claude Code**; adding another CLI is a few lines of TOML, with
 the caveat described in [`config/config.toml.example`](config/config.toml.example).
 
+**New in 1.1.0:** it acts on the desktop instead of only answering, and it
+hears quiet voices in loud rooms. [Patch notes](CHANGELOG.md).
+
 [openWakeWord]: https://github.com/dscripka/openWakeWord
 [voxtype]: https://github.com/omarchy/voxtype
 [piper]: https://github.com/rhasspy/piper
