@@ -370,6 +370,39 @@ def fetch(url, dest, limit, expected):
         raise SystemExit(f"download failed: {exc.reason}")
 
 
+def cmd_stamp(daemon, args):
+    """Report config.toml's identity without reading a byte of it.
+
+    The panel used to notice edits with a Quickshell FileView pointed at this
+    file. FileView preloads by default, so the whole file was pulled into the
+    long-lived bar process before anything had checked its size. Nothing in
+    the panel wants the contents: every value it displays already comes from
+    `show`. All it needs is to know the file is not the one it last saw, and
+    the descriptor `open_ro` has already vetted answers that from fstat
+    alone. A file too large for `show` to accept still stamps fine, which is
+    the point: noticing a change must not depend on being willing to read it.
+    """
+    try:
+        fd = safefile.open_ro(args.config)
+    except OSError:
+        # No config yet, or something we will not read (UnsafeFile is an
+        # OSError). Either way there is nothing to be stale against, and
+        # needsSetup already covers the missing case.
+        print(json.dumps({"present": False}))
+        return 0
+    try:
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    print(json.dumps({
+        "present": True,
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "inode": st.st_ino,
+    }))
+    return 0
+
+
 def cmd_install_voice(daemon, args):
     vid = args.voice
     if vid not in VOICE_CATALOG:
@@ -454,6 +487,7 @@ def main():
     parser.add_argument("--config", default=CONFIG_PATH)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("show", help="print effective settings as JSON")
+    sub.add_parser("stamp", help="print config.toml identity, reading none of it")
     setp = sub.add_parser("set", help="change one setting")
     setp.add_argument("key")
     setp.add_argument("value")
@@ -467,6 +501,7 @@ def main():
     daemon = load_daemon()
     return {
         "show": cmd_show,
+        "stamp": cmd_stamp,
         "set": cmd_set,
         "grant": cmd_grant,
         "install-voice": cmd_install_voice,

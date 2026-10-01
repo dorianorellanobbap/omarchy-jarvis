@@ -12,10 +12,17 @@ looks like markup is markup, which makes a `<img src=...>` in a helper's
 stderr a network fetch. Nothing about that is visible until the day a string
 arrives with a tag in it.
 
+Also here: the ceilings on what the shell holds. The panel runs inside the
+bar, which outlives it and is shared with every other plugin, so a file it
+reads, a stream it buffers and a log it appends to all need a bound. None of
+that is visible until the day something arrives that is too big.
+
   python3 tests/test_wiring.py
 """
+import argparse
 import ast
 import builtins
+import contextlib
 import importlib.machinery
 import importlib.util
 import io
@@ -159,6 +166,69 @@ with tempfile.TemporaryDirectory() as tmp:
         jc.voices_dir = real_dir
     check("a voice file shaped like markup is not offered",
           listed == ["en_US-amy-medium.onnx"], f"listed: {listed}")
+
+# The shell must not read files itself. A Quickshell FileView preloads by
+# default, so merely pointing one at a path pulls the whole file into the bar
+# before anything can check its size; `reload()` then does it again. The panel
+# needs config.toml's identity, not its contents, and `stamp` supplies that.
+qml_fileviews = []
+for name in ("Panel.qml", "BarWidget.qml", "LogView.qml"):
+    for i, line in enumerate(open(os.path.join(ROOT, name)).read().splitlines()):
+        if re.match(r"^\s*FileView\s*\{", line):
+            qml_fileviews.append(f"{name}:{i + 1}")
+check("no shipped QML reads a file with FileView",
+      not qml_fileviews, f"FileView at: {qml_fileviews}")
+
+# A streamed log is appended to for as long as its process runs, and the mic
+# test runs until someone stops it. appendLog keeps the tail and drops the
+# head; a bare += has no ceiling at all.
+unbounded = []
+for name in ("Panel.qml", "BarWidget.qml", "LogView.qml"):
+    for i, line in enumerate(open(os.path.join(ROOT, name)).read().splitlines()):
+        if re.search(r"\b(setupLog|micLog)\s*\+=", line):
+            unbounded.append(f"{name}:{i + 1}")
+check("no log property is appended to without a ceiling",
+      not unbounded, f"unbounded += at: {unbounded}")
+
+# The property that matters about `stamp`: noticing a change must not depend
+# on being willing to read the file. A config past the ceiling `show` enforces
+# still has to stamp, and stamping must touch no bytes at all, which is
+# asserted by making any read fail outright.
+with tempfile.TemporaryDirectory() as tmp:
+    oversized = os.path.join(tmp, "config.toml")
+    with open(oversized, "wb") as fh:
+        fh.write(b"#" + b"x" * (jc.safefile.MAX_CONFIG_BYTES + 16))
+
+    real_read_bytes = jc.safefile.read_bytes
+
+    def _refuse(*a, **k):
+        raise AssertionError("stamp read the file")
+
+    jc.safefile.read_bytes = _refuse
+    buf = io.StringIO()
+    rc, out, read_attempted = None, {}, False
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = jc.cmd_stamp(None, argparse.Namespace(config=oversized))
+        out = json.loads(buf.getvalue())
+    except AssertionError:
+        # _refuse fired: stamp read bytes it has no business reading. Report
+        # that as a failed check rather than letting it kill the run.
+        read_attempted = True
+    finally:
+        jc.safefile.read_bytes = real_read_bytes
+    check("a config past the read ceiling still stamps, reading no bytes",
+          not read_attempted and rc == 0 and out.get("present") is True
+          and out.get("size", 0) > jc.safefile.MAX_CONFIG_BYTES,
+          "stamp read the file" if read_attempted else f"rc={rc} out={out}")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = jc.cmd_stamp(None, argparse.Namespace(config=os.path.join(tmp, "gone")))
+    check("a missing config stamps as absent rather than failing",
+          rc == 0 and json.loads(buf.getvalue()) == {"present": False},
+          f"rc={rc} out={buf.getvalue()!r}")
+
 
 print()
 if all(results):

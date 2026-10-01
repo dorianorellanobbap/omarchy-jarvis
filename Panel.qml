@@ -83,6 +83,30 @@ Panel {
   // warn about. This is what resolves the disarmed case the notice describes.
   onArmedChanged: if (root.armed) root.pendingRestart = false
 
+  // What the panel last saw config.toml as, so a change can be noticed
+  // without the file's contents ever entering the shell. See stampProc.
+  property string configStamp: ""
+
+  // Everything this shell holds from outside it has a ceiling, because the
+  // shell is the bar: it outlives the panel, and every other plugin shares
+  // the process. A streamed log grows for as long as its process runs, and
+  // the mic test runs for as long as someone leaves it running, so the logs
+  // keep their tail, which is the half anyone reads, and drop the head. The
+  // collector ceiling is the same rule for output that arrives in one piece.
+  readonly property int maxLogChars: 64 * 1024
+  readonly property int maxCollectedChars: 256 * 1024
+
+  function appendLog(existing, line) {
+    var s = existing + line + "\n"
+    return s.length > root.maxLogChars
+      ? s.slice(s.length - root.maxLogChars)
+      : s
+  }
+
+  function collected(out) {
+    return String(out || "").slice(0, root.maxCollectedChars)
+  }
+
   function open()   { load(); root.controller.show() }
   function close()  { root.controller.hide() }
   function toggle() { root.opened ? root.close() : root.open() }
@@ -90,6 +114,7 @@ Panel {
   function load() {
     errorText = ""
     showProc.running = true
+    if (!stampProc.running) stampProc.running = true
   }
 
   function agentEntry(name) {
@@ -184,7 +209,7 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         try {
-          var d = JSON.parse(String(text || "{}"))
+          var d = JSON.parse(root.collected(text) || "{}")
           root.agent = d.agent || ""
           root.wakeWord = d.wake_word || ""
           root.agents = d.agents || []
@@ -222,7 +247,7 @@ Panel {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var msg = String(text || "").replace(/^\[jarvis\].*$/gm, "").trim()
+        var msg = root.collected(text).replace(/^\[jarvis\].*$/gm, "").trim()
         if (msg) root.errorText = msg
       }
     }
@@ -237,7 +262,7 @@ Panel {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var msg = String(text || "").replace(/^\[jarvis\].*$/gm, "").trim()
+        var msg = root.collected(text).replace(/^\[jarvis\].*$/gm, "").trim()
         if (msg) root.errorText = msg
       }
     }
@@ -259,17 +284,22 @@ Panel {
   // is why its output is shown here rather than swallowed.
   Process {
     id: setupProc
-    stdout: SplitParser { onRead: function(line) { root.setupLog += line + "\n" } }
-    stderr: SplitParser { onRead: function(line) { root.setupLog += line + "\n" } }
+    stdout: SplitParser {
+      onRead: function(line) { root.setupLog = root.appendLog(root.setupLog, line) }
+    }
+    stderr: SplitParser {
+      onRead: function(line) { root.setupLog = root.appendLog(root.setupLog, line) }
+    }
     onExited: function(code) {
       root.settingUp = false
       if (code === 0) {
         root.needsSetup = false
-        root.setupLog += "\nDone. Jarvis is installed.\n"
+        root.setupLog = root.appendLog(root.setupLog, "\nDone. Jarvis is installed.")
         root.load()
       } else {
-        root.setupLog += "\nSetup stopped (exit " + code + "). "
-          + "The lines above say what it needed.\n"
+        root.setupLog = root.appendLog(root.setupLog,
+          "\nSetup stopped (exit " + code + "). "
+          + "The lines above say what it needed.")
       }
     }
   }
@@ -279,11 +309,13 @@ Panel {
   // instructions arrive, not all at once when it is over.
   Process {
     id: micProc
-    stdout: SplitParser { onRead: function(line) { root.micLog += line + "\n" } }
+    stdout: SplitParser {
+      onRead: function(line) { root.micLog = root.appendLog(root.micLog, line) }
+    }
     stderr: SplitParser {
       onRead: function(line) {
         // The daemon's own [jarvis] chatter is not part of the answer.
-        if (!/^\[jarvis\]/.test(String(line))) root.micLog += line + "\n"
+        if (!/^\[jarvis\]/.test(String(line))) root.micLog = root.appendLog(root.micLog, line)
       }
     }
     onExited: function(code) { root.micTesting = false }
@@ -294,7 +326,7 @@ Panel {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var msg = String(text || "").replace(/^\[jarvis\].*$/gm, "").trim()
+        var msg = root.collected(text).replace(/^\[jarvis\].*$/gm, "").trim()
         if (msg) root.errorText = msg
       }
     }
@@ -327,14 +359,38 @@ Panel {
   //
   // No guard is needed against our own writes: `set` while armed already
   // kicks a restart, and that restart clears the notice this raises.
-  FileView {
-    path: root.configPath
-    watchChanges: true
-    printErrors: false
-    onFileChanged: {
-      reload()
-      if (root.armed) root.pendingRestart = true
+  // Watching used to be a FileView on the file itself. FileView preloads by
+  // default, so the whole file landed in the bar process before anything had
+  // checked its size, and a reload() on every change did it again. Nothing
+  // here needs the contents: `show` already supplies every value on screen.
+  // `stamp` reports the file's identity and nothing else, from a descriptor
+  // it has already vetted, reading none of it. A config too large for `show`
+  // to accept still stamps, which is the point: noticing a change must not
+  // depend on being willing to read it.
+  Process {
+    id: stampProc
+    command: [root.helper, "stamp"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var seen = root.collected(text)
+        if (seen === root.configStamp) return
+        // The first stamp of a session establishes what unchanged means. It
+        // is not itself a change.
+        if (root.configStamp !== "" && root.armed) root.pendingRestart = true
+        root.configStamp = seen
+      }
     }
+  }
+
+  // Only while the panel is open. The notice this raises is visible nowhere
+  // else, so a closed panel stat-ing the disk every two seconds would be a
+  // bar-wide cost for something nobody can see.
+  Timer {
+    interval: 2000
+    repeat: true
+    running: root.opened
+    onTriggered: if (!stampProc.running) stampProc.running = true
   }
 
   KeyboardPanel {
